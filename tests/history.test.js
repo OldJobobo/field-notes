@@ -1,0 +1,21 @@
+const test = require("node:test")
+const assert = require("node:assert/strict")
+const History = require("../History.js")
+const Model = require("../DocumentModel.js")
+
+test("undoes, redoes, and invalidates redo after a new edit", () => {
+  const empty = Model.createDocument(760, 560)
+  const first = Model.addStroke(empty, [[0, 0], [10, 10]], 2)
+  const second = Model.addStroke(first, [[20, 20], [30, 30]], 2)
+  let history = History.create(empty)
+  history = History.commit(history, first)
+  history = History.commit(history, second)
+
+  history = History.undo(history)
+  assert.equal(history.present.objects.length, 1)
+  history = History.redo(history)
+  assert.equal(history.present.objects.length, 2)
+  history = History.undo(history)
+  history = History.commit(history, Model.clearDocument(history.present))
+  assert.equal(history.future.length, 0)
+})

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "jobo.field-notes",
+  "name": "Field Notes",
+  "version": "0.1.0",
+  "author": "OldJobobo",
+  "license": "MIT",
+  "description": "A floating sheet of graph paper for drawing and typed notes.",
+  "kinds": [
+    "panel",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Panel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Field Notes",
+    "description": "Open the floating graph-paper notebook",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
