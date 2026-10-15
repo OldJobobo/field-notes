@@ -1,16 +1,18 @@
-function copy(value) {
-    return JSON.parse(JSON.stringify(value))
-}
+// Documents are immutable (see DocumentModel.js), so history keeps references
+// instead of deep copies.
+var LIMIT = 100
 
 function create(document) {
-    return { past: [], present: copy(document), future: [] }
+    return { past: [], present: document, future: [] }
 }
 
 function commit(history, document) {
-    var past = history.past.concat([copy(history.present)])
-    if (past.length > 100)
-        past = past.slice(past.length - 100)
-    return { past: past, present: copy(document), future: [] }
+    if (document === history.present)
+        return history
+    var past = history.past.concat([history.present])
+    if (past.length > LIMIT)
+        past = past.slice(past.length - LIMIT)
+    return { past: past, present: document, future: [] }
 }
 
 function undo(history) {
@@ -18,8 +20,8 @@ function undo(history) {
         return history
     return {
         past: history.past.slice(0, -1),
-        present: copy(history.past[history.past.length - 1]),
-        future: [copy(history.present)].concat(history.future)
+        present: history.past[history.past.length - 1],
+        future: [history.present].concat(history.future)
     }
 }
 
@@ -27,8 +29,8 @@ function redo(history) {
     if (!history.future.length)
         return history
     return {
-        past: history.past.concat([copy(history.present)]),
-        present: copy(history.future[0]),
+        past: history.past.concat([history.present]),
+        present: history.future[0],
         future: history.future.slice(1)
     }
 }
