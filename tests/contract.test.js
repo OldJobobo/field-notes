@@ -417,3 +417,23 @@ test("Ctrl+Shift+C copies whichever of path or image Ctrl+C does not", () => {
   assert.match(read("ToolIsland.qml"), /root\.exportedMode === "image" \? "Image copied" : "Image path copied"/,
     "the confirmation names what was actually copied")
 })
+
+test("the README documents every keyboard shortcut the panel handles", () => {
+  const panel = read("Panel.qml")
+  const readme = read("README.md")
+  // How each handled key is written in the README.
+  const documented = {
+    Z: "Ctrl+Z", Y: "Ctrl+Y", C: "Ctrl+C", Comma: "Ctrl+,", F2: "F2", G: "`G`", S: "`S`", N: "`N`",
+    PageUp: "PgUp", PageDown: "PgDn", P: "`P`", B: "`B`", E: "`E`", T: "`T`", V: "`V`",
+    BracketLeft: "`[`", BracketRight: "`]`", Left: "arrow keys", Right: "arrow keys", Up: "arrow keys",
+    Down: "arrow keys", Home: "`Home`", Delete: "`Delete`", Backspace: "`Backspace`", Escape: "`Esc`"
+  }
+  const handled = new Set([...panel.matchAll(/Qt\.Key_(\w+)/g)].map(match => match[1]))
+  for (const key of handled) {
+    assert.ok(documented[key], `Qt.Key_${key} is handled but has no README entry in this test's list`)
+    assert.ok(readme.includes(documented[key]), `README must mention ${documented[key]} (Qt.Key_${key})`)
+  }
+  assert.ok(readme.includes("Ctrl+Shift+C"))
+  assert.ok(fs.existsSync(path.join(root, "docs/DEVELOPMENT.md")), "the README links to the developer guide")
+  assert.equal((readme.match(/```/g) || []).length % 2, 0, "README code fences are balanced")
+})

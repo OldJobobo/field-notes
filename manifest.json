@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "OldJobobo",
   "license": "MIT",
-  "description": "A floating sheet of graph paper for drawing and typed notes.",
+  "description": "A floating notebook for sketches and typed notes, with graph, dot and ruled paper.",
   "kinds": [
     "panel",
     "bar-widget"
