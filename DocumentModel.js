@@ -5,17 +5,36 @@ var MAX_OBJECTS = 4096
 var MAX_STROKE_POINTS = 8192
 var MAX_TOTAL_POINTS = 250000
 var MAX_TEXT = 4096
+var MAX_TITLE = 60
 var MAX_SHEETS = 32
 var TOOLS = ["select", "pen", "eraser", "text"]
 var TOOLBAR_SIDES = ["right", "left", "top", "bottom"]
 // Ruling printed on a sheet, in the order clicking the paper label cycles through them.
 var PAPERS = ["graph", "dots", "ruled", "plain"]
+// Sheet sizes, smallest first; all share the medium sheet's proportions.
+var SIZES = {
+    small: { width: 520, height: 380 },
+    medium: { width: 760, height: 560 },
+    large: { width: 1040, height: 760 }
+}
+var SIZE_ORDER = ["small", "medium", "large"]
+// User settings and the values each one accepts. The first value is the default, which
+// matches how Field Notes behaves with no settings saved.
+var SETTING_CHOICES = {
+    theme: [true, false],
+    tilt: [true, false],
+    smoothing: ["medium", "off", "light", "strong"],
+    eraser: ["medium", "small", "large"],
+    clipboard: ["path", "image"]
+}
+var MAX_PATH = 512
 
 function createDocument(width, height, paper) {
     return {
         schemaVersion: 1,
         page: { width: width, height: height },
         paper: PAPERS.indexOf(paper) >= 0 ? paper : "graph",
+        title: "",
         objects: [],
         ui: { tool: "pen", penWidth: 2.5 }
     }
@@ -37,6 +56,84 @@ function setPaper(document, paper) {
     if (PAPERS.indexOf(paper) < 0 || paper === document.paper)
         return document
     return Object.assign({}, document, { paper: paper })
+}
+
+// One line, trimmed and bounded.
+function cleanTitle(title) {
+    return String(title || "").replace(/\s+/g, " ").trim().slice(0, MAX_TITLE)
+}
+
+function setTitle(document, title) {
+    var clean = cleanTitle(title)
+    return clean === document.title ? document : Object.assign({}, document, { title: clean })
+}
+
+// A sheet with nothing drawn, written or named on it.
+function isBlank(document) {
+    return document.objects.length === 0 && !document.title
+}
+
+// File-name form of a title, e.g. "Meeting notes: Q4!" -> "meeting-notes-q4".
+function slug(title) {
+    return cleanTitle(title).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40)
+}
+
+function createSheet(size, paper) {
+    var dimensions = SIZES[size] || SIZES.medium
+    return createDocument(dimensions.width, dimensions.height, paper)
+}
+
+function sizeName(document) {
+    for (var i = 0; i < SIZE_ORDER.length; i++) {
+        var dimensions = SIZES[SIZE_ORDER[i]]
+        if (document.page.width === dimensions.width && document.page.height === dimensions.height)
+            return SIZE_ORDER[i]
+    }
+    return "medium"
+}
+
+// The furthest right and down any ink or note reaches.
+function contentExtent(document) {
+    var extent = { width: 0, height: 0 }
+    for (var i = 0; i < document.objects.length; i++) {
+        var object = document.objects[i]
+        if (object.type === "text") {
+            extent.width = Math.max(extent.width, object.x + object.width)
+            extent.height = Math.max(extent.height, object.y + object.height)
+        } else if (object.type === "stroke") {
+            var half = Number(object.width || 1) / 2
+            for (var j = 0; j < object.points.length; j++) {
+                extent.width = Math.max(extent.width, object.points[j][0] + half)
+                extent.height = Math.max(extent.height, object.points[j][1] + half)
+            }
+        }
+    }
+    return extent
+}
+
+function fitsSize(document, size) {
+    var dimensions = SIZES[size]
+    var extent = contentExtent(document)
+    return !!dimensions && extent.width <= dimensions.width && extent.height <= dimensions.height
+}
+
+// Resizes the sheet from its top-left corner. Content keeps its place and scale, so a
+// size it would not fit on is refused (the same document comes back).
+function setSize(document, size) {
+    if (!SIZES[size] || size === sizeName(document) || !fitsSize(document, size))
+        return document
+    return Object.assign({}, document, { page: { width: SIZES[size].width, height: SIZES[size].height } })
+}
+
+// The next size in order that the sheet's content fits on, or the current size if none.
+function nextSize(document) {
+    var current = SIZE_ORDER.indexOf(sizeName(document))
+    for (var step = 1; step < SIZE_ORDER.length; step++) {
+        var size = SIZE_ORDER[(current + step) % SIZE_ORDER.length]
+        if (fitsSize(document, size))
+            return size
+    }
+    return SIZE_ORDER[current]
 }
 
 function nextPaper(paper) {
@@ -267,6 +364,28 @@ function sanitizeObjects(rawObjects, document, budget) {
     return withObjects(document, objects)
 }
 
+function defaultSettings() {
+    var settings = { exportDir: "" }
+    for (var key in SETTING_CHOICES)
+        settings[key] = SETTING_CHOICES[key][0]
+    return settings
+}
+
+// Untrusted saved settings -> a complete, valid settings object. exportDir is a single-line
+// path, or "" for the default folder.
+function sanitizeSettings(raw) {
+    var settings = defaultSettings()
+    if (!raw || typeof raw !== "object")
+        return settings
+    for (var key in SETTING_CHOICES) {
+        if (SETTING_CHOICES[key].indexOf(raw[key]) >= 0)
+            settings[key] = raw[key]
+    }
+    if (typeof raw.exportDir === "string")
+        settings.exportDir = raw.exportDir.replace(/[\r\n\0]/g, "").trim().slice(0, MAX_PATH)
+    return settings
+}
+
 function sanitizeUi(raw) {
     var ui = { tool: "pen", penWidth: 2.5, toolbar: "right" }
     if (!raw || typeof raw !== "object")
@@ -308,8 +427,10 @@ function sanitizeNotebook(raw, width, height) {
         var sheet = rawSheets[i]
         if (!sheet || typeof sheet !== "object" || !Array.isArray(sheet.objects))
             continue
-        var document = sanitizeObjects(sheet.objects, createDocument(width, height, sheet.paper), budget)
-        if (document.objects.length === 0 && i !== current)
+        var dimensions = SIZES[sheet.size] || { width: width, height: height }
+        var document = sanitizeObjects(sheet.objects, createDocument(dimensions.width, dimensions.height, sheet.paper), budget)
+        document.title = cleanTitle(typeof sheet.title === "string" ? sheet.title : "")
+        if (isBlank(document) && i !== current)
             continue
         if (i === current)
             open = documents.length
@@ -317,16 +438,19 @@ function sanitizeNotebook(raw, width, height) {
     }
     if (documents.length === 0)
         documents.push(createDocument(width, height))
-    return { documents: documents, current: open, ui: sanitizeUi(raw.ui) }
+    return { documents: documents, current: open, ui: sanitizeUi(raw.ui), settings: sanitizeSettings(raw.settings) }
 }
 
-function serialize(documents, current, ui) {
+function serialize(documents, current, ui, settings) {
     return JSON.stringify({
         schemaVersion: 2,
         page: documents[0].page,
         current: current,
-        sheets: documents.map(function(document) { return { paper: document.paper, objects: document.objects } }),
-        ui: ui
+        sheets: documents.map(function(document) {
+            return { title: document.title || "", size: sizeName(document), paper: document.paper, objects: document.objects }
+        }),
+        ui: ui,
+        settings: settings || defaultSettings()
     })
 }
 
@@ -336,6 +460,19 @@ if (typeof module !== "undefined")
         PAPERS: PAPERS,
         createDocument: createDocument,
         setPaper: setPaper,
+        SIZES: SIZES,
+        SETTING_CHOICES: SETTING_CHOICES,
+        defaultSettings: defaultSettings,
+        sanitizeSettings: sanitizeSettings,
+        SIZE_ORDER: SIZE_ORDER,
+        createSheet: createSheet,
+        sizeName: sizeName,
+        fitsSize: fitsSize,
+        setSize: setSize,
+        nextSize: nextSize,
+        setTitle: setTitle,
+        isBlank: isBlank,
+        slug: slug,
         nextPaper: nextPaper,
         findObject: findObject,
         sameObjects: sameObjects,

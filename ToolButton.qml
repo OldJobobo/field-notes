@@ -16,9 +16,12 @@ Item {
     property bool forceTooltip: false
     // Edge of the button the tooltip appears beyond: left, right, top or bottom.
     property string tooltipSide: "left"
-    readonly property color iconColor: selected ? "#2b2925"
-        : dangerous ? "#d98672"
-        : mouse.containsMouse ? "#f0e9d8" : "#a9a291"
+    // OmarchyTheme.qml or ClassicTheme.qml, chosen in settings.
+    property QtObject theme
+    readonly property bool hot: mouse.containsMouse
+    readonly property color iconColor: dangerous ? (selected ? theme.selectedDangerIcon : theme.danger)
+        : selected ? theme.selectedIcon
+        : hot ? theme.hoverIcon : theme.icon
     signal activated()
 
     implicitWidth: 40
@@ -34,12 +37,17 @@ Item {
             root.activated()
     }
 
+    // Same state precedence as the shell's own Button: pressed, hover, selected, rest.
     Rectangle {
         anchors.fill: parent
-        radius: 9
-        color: root.selected ? (root.dangerous ? "#d98672" : "#e6dfcc")
-            : mouse.pressed ? "#26ffffff"
-            : mouse.containsMouse ? "#14ffffff" : "transparent"
+        radius: Math.max(0, root.theme.radius - 4)
+        color: mouse.pressed ? root.theme.pressedFill
+            : root.hot ? root.theme.hoverFill
+            : root.selected ? (root.dangerous ? root.theme.dangerFill : root.theme.selectedFill)
+            : "transparent"
+        border.width: root.hot ? root.theme.hoverBorderWidth
+            : root.selected ? root.theme.selectedBorderWidth : 0
+        border.color: root.hot ? root.theme.hoverBorder : root.theme.selectedBorder
     }
 
     Text {
@@ -64,6 +72,7 @@ Item {
     Tooltip {
         id: tooltip
 
+        theme: root.theme
         text: root.text
         shortcut: root.shortcut
         side: root.tooltipSide

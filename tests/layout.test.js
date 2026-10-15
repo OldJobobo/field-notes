@@ -60,3 +60,40 @@ test("docks a dragged toolbar to the nearest paper side without flickering", () 
   assert.equal(Layout.nearestSide(788, 618, paper, "bottom"), "bottom")
   assert.equal(Layout.nearestSide(860, 300, paper, "bogus"), "right")
 })
+
+test("every sheet size fits the board with the toolbar docked on any side", () => {
+  for (const [width, height] of [[520, 380], [760, 560], [1040, 760]]) {
+    for (const side of Layout.TOOLBAR_SIDES) {
+      const horizontal = side === "top" || side === "bottom"
+      const d = Layout.dock(side, width, height, 582, 48)
+      const tool = { x: d.toolX, y: d.toolY, width: horizontal ? 582 : 48, height: horizontal ? 48 : 582 }
+      const label = `${width}x${height} ${side}`
+      assert.ok(tool.x - 18 >= 0 && tool.y - 18 >= 0, label + ": toolbar inside the board")
+      assert.ok(tool.x + tool.width + 18 <= d.width && tool.y + tool.height + 18 <= d.height, label + ": toolbar inside the board")
+      assert.ok(d.paperX - 24 >= 0 && d.paperY - 28 >= 0, label + ": paper inside the board")
+      assert.ok(d.paperX + width + 24 <= d.width && d.paperY + height + 28 <= d.height, label + ": paper inside the board")
+      const centre = horizontal ? tool.x + tool.width / 2 - (d.paperX + width / 2) : tool.y + tool.height / 2 - (d.paperY + height / 2)
+      assert.ok(Math.abs(centre) <= 1, label + ": toolbar centred on the paper")
+    }
+  }
+})
+
+test("the settings card fits beside the toolbar on every size and side", () => {
+  // Mirrors Panel.settingsArea; the wide two-column card is 780 wide and about 500 tall.
+  for (const [width, height] of [[520, 380], [760, 560], [1040, 760]]) {
+    for (const side of Layout.TOOLBAR_SIDES) {
+      const horizontal = side === "top" || side === "bottom"
+      const d = Layout.dock(side, width, height, 624, 48)
+      const tool = { x: d.toolX, y: d.toolY, width: horizontal ? 624 : 48, height: horizontal ? 48 : 624 }
+      const area = { x: 12, y: 12, width: d.width - 24, height: d.height - 24 }
+      if (side === "bottom") area.height = tool.y - 24
+      else if (side === "top") { area.y = tool.y + tool.height + 12; area.height = d.height - area.y - 12 }
+      else if (side === "left") { area.x = tool.x + tool.width + 12; area.width = d.width - area.x - 12 }
+      else area.width = tool.x - 24
+      const label = `${width}x${height} ${side}`
+      assert.ok(area.width >= 460 && area.height >= 300, label + ": room for at least the narrow card")
+      if (width >= 760)
+        assert.ok(area.width >= 780 && area.height >= 500, label + ": medium and large sheets fit the two-column card unscrolled")
+    }
+  }
+})

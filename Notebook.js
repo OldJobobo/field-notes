@@ -1,6 +1,7 @@
 // A notebook is an ordered list of sheets, each with its own undo history (History.js),
-// plus the index of the open sheet. Only the open sheet may be blank: a blank sheet is
-// dropped when the user leaves it, so new sheets never pile up as empty pages.
+// plus the index of the open sheet. Only the open sheet may be blank (nothing drawn,
+// written or named on it): a blank sheet is dropped when the user leaves it, so new
+// sheets never pile up as empty pages.
 var MAX_SHEETS = 32
 
 function create(histories, current) {
@@ -8,7 +9,7 @@ function create(histories, current) {
 }
 
 function isBlank(history) {
-    return history.present.objects.length === 0
+    return history.present.objects.length === 0 && !history.present.title
 }
 
 function replaceCurrent(notebook, history) {

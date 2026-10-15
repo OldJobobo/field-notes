@@ -19,9 +19,9 @@ Item {
     property real penWidth: 2.5
     property string toolbarSide: "right"
     // The toolbar has the same length in either orientation (see ToolIsland).
-    readonly property var dockLayout: Layout.dock(toolbarSide, 760, 560,
+    readonly property var dockLayout: Layout.dock(toolbarSide, currentDocument.page.width, currentDocument.page.height,
         Math.max(tools.implicitWidth, tools.implicitHeight), Math.min(tools.implicitWidth, tools.implicitHeight))
-    property var notebook: Notebook.create([History.create(DocumentModel.createDocument(760, 560))], 0)
+    property var notebook: Notebook.create([History.create(DocumentModel.createSheet("medium"))], 0)
     readonly property var historyState: notebook.sheets[notebook.current]
     readonly property var currentDocument: historyState.present
     readonly property bool canUndo: historyState.past.length > 0
@@ -31,14 +31,64 @@ Item {
     // can never overwrite it with an empty page.
     property bool stateReady: false
     property string saveStatus: "LOADING"
+    readonly property string home: Quickshell.env("HOME")
+    readonly property string defaultExportDir: (Quickshell.env("XDG_PICTURES_DIR") || home + "/Pictures") + "/field-notes"
+    // User settings (DocumentModel.defaultSettings), saved with the notes.
+    property var settings: DocumentModel.defaultSettings()
+    property bool settingsOpen: false
+    readonly property QtObject theme: settings.theme ? omarchyTheme : classicTheme
+    readonly property string exportDir: settings.exportDir ? expandHome(settings.exportDir) : defaultExportDir
+    readonly property var smoothingStrength: ({ off: 0, light: 2, medium: 3.5, strong: 5 })
+    readonly property var eraserRadii: ({ small: 6, medium: 10, large: 16 })
+    // The part of the board beside the toolbar, where the settings card may go, so it
+    // never covers the toolbar (or the gear that closes it).
+    readonly property var settingsArea: {
+        var edge = 12
+        var area = { x: edge, y: edge, width: board.width - 2 * edge, height: board.height - 2 * edge }
+        if (toolbarSide === "bottom")
+            area.height = tools.y - 2 * edge
+        else if (toolbarSide === "top") {
+            area.y = tools.y + tools.height + edge
+            area.height = board.height - area.y - edge
+        } else if (toolbarSide === "left") {
+            area.x = tools.x + tools.width + edge
+            area.width = board.width - area.x - edge
+        } else {
+            area.width = tools.x - 2 * edge
+        }
+        return area
+    }
+    property string pendingExport: ""
+    // What the export in progress puts on the clipboard: "path" or "image".
+    property string pendingMode: "path"
+    property string appVersion: ""
 
     function focusKeys() {
         // Taking focus away from an open note editor also commits it.
         keySink.forceActiveFocus()
     }
 
+    // Every notebook change goes through here. When the open sheet changes size
+    // (switching sheets, resizing, undo), the paper stays centred where it was on screen.
+    function setNotebook(next) {
+        var before = currentDocument.page
+        var centerX = board.x + (paper.x + paper.width / 2) * board.scale
+        var centerY = board.y + (paper.y + paper.height / 2) * board.scale
+        notebook = next
+        var after = currentDocument.page
+        if (after.width === before.width && after.height === before.height)
+            return
+        if (!positionInitialized) {
+            centerBoard()
+            return
+        }
+        board.x = Math.round(centerX - (paper.x + paper.width / 2) * board.scale)
+        board.y = Math.round(centerY - (paper.y + paper.height / 2) * board.scale)
+        clampBoard()
+    }
+
     function commitDocument(nextDocument) {
-        notebook = Notebook.replaceCurrent(notebook, History.commit(historyState, nextDocument))
+        setNotebook(Notebook.replaceCurrent(notebook, History.commit(historyState, nextDocument)))
     }
 
     // Commits an open note and drops any gesture or selection, whose object ids belong
@@ -51,13 +101,14 @@ Item {
 
     function selectSheet(index) {
         leaveSheet()
-        notebook = Notebook.select(notebook, index)
+        setNotebook(Notebook.select(notebook, index))
     }
 
     function addSheet() {
         leaveSheet()
-        // A new sheet starts with the paper of the sheet being left.
-        notebook = Notebook.add(notebook, History.create(DocumentModel.createDocument(760, 560, currentDocument.paper)))
+        // A new sheet starts with the size and paper of the sheet being left.
+        setNotebook(Notebook.add(notebook, History.create(
+            DocumentModel.createSheet(DocumentModel.sizeName(currentDocument), currentDocument.paper))))
     }
 
     function selectTool(tool) {
@@ -67,17 +118,50 @@ Item {
 
     function undo() {
         focusKeys()
-        notebook = Notebook.replaceCurrent(notebook, History.undo(historyState))
+        setNotebook(Notebook.replaceCurrent(notebook, History.undo(historyState)))
     }
 
     function redo() {
         focusKeys()
-        notebook = Notebook.replaceCurrent(notebook, History.redo(historyState))
+        setNotebook(Notebook.replaceCurrent(notebook, History.redo(historyState)))
     }
 
     function cyclePaper() {
         focusKeys()
         commitDocument(DocumentModel.setPaper(currentDocument, DocumentModel.nextPaper(currentDocument.paper)))
+    }
+
+    function cycleSize() {
+        focusKeys()
+        var size = DocumentModel.nextSize(currentDocument)
+        if (size === DocumentModel.sizeName(currentDocument))
+            paper.refuseSize("The ink doesn't fit a smaller size")
+        else
+            commitDocument(DocumentModel.setSize(currentDocument, size))
+    }
+
+    function renameSheet(title) {
+        commitDocument(DocumentModel.setTitle(currentDocument, title))
+    }
+
+    // Saves the open sheet as a PNG and copies its path or the image itself, for pasting
+    // into other tools: the "Ctrl+C copies" setting, or the other one when alternate is
+    // true (Ctrl+Shift+C). Every export is a new file, so a path pasted earlier keeps
+    // showing that version.
+    function copyImagePath(alternate) {
+        focusKeys()
+        if (pendingExport !== "")
+            return
+        var preferred = settings.clipboard
+        pendingMode = alternate ? (preferred === "image" ? "path" : "image") : preferred
+        var name = DocumentModel.slug(currentDocument.title) || "sheet-" + paper.pad2(notebook.current + 1)
+        pendingExport = exportDir + "/" + name + "-" + Qt.formatDateTime(new Date(), "yyyyMMdd-HHmmss") + ".png"
+        prepareExportDir.running = true
+    }
+
+    function finishExport(ok) {
+        pendingExport = ""
+        tools.exportFinished(ok, pendingMode)
     }
 
     function clearDocument() {
@@ -105,6 +189,50 @@ Item {
         setToolbarSide(Layout.nearestSide(point.x, point.y, paper, toolbarSide))
     }
 
+    // "~" and relative paths are taken from the home folder.
+    function expandHome(path) {
+        if (path === "~")
+            return home
+        if (path.indexOf("~/") === 0)
+            return home + path.slice(1)
+        return path.charAt(0) === "/" ? path : home + "/" + path
+    }
+
+    function setSetting(key, value) {
+        var next = Object.assign({}, settings)
+        next[key] = value
+        settings = DocumentModel.sanitizeSettings(next)
+    }
+
+    function resetSettings() {
+        settings = DocumentModel.defaultSettings()
+        setToolbarSide("right")
+    }
+
+    function openSettings() {
+        focusKeys()
+        paper.cancelGesture()
+        settingsOpen = true
+    }
+
+    function closeSettings() {
+        if (!settingsOpen)
+            return false
+        settingsOpen = false
+        focusKeys()
+        return true
+    }
+
+    function toggleSettings() {
+        if (!closeSettings())
+            openSettings()
+    }
+
+    function openExportFolder() {
+        openFolder.command = ["sh", "-c", "mkdir -p -- \"$1\" && exec xdg-open \"$1\"", "field-notes", exportDir]
+        openFolder.running = true
+    }
+
     function setPenWidth(width) {
         penWidth = Math.max(1, Math.min(12, width))
     }
@@ -129,7 +257,7 @@ Item {
             toolbar: toolbarSide,
             boardX: positionInitialized ? Math.round(board.x) : null,
             boardY: positionInitialized ? Math.round(board.y) : null
-        }))
+        }, settings))
     }
 
     function flushSave() {
@@ -154,6 +282,7 @@ Item {
             currentTool = restored.ui.tool
             penWidth = restored.ui.penWidth
             toolbarSide = restored.ui.toolbar
+            settings = restored.settings
             if (restored.ui.boardX !== undefined) {
                 board.x = restored.ui.boardX
                 board.y = restored.ui.boardY
@@ -205,17 +334,29 @@ Item {
         scheduleSave()
     }
 
+    // payloadJson may be {"settings": true} to open straight to settings (the bar icon's
+    // right-click); a summon while already open just applies the payload.
     function open(payloadJson) {
+        var payload = {}
+        try {
+            payload = JSON.parse(payloadJson || "{}") || {}
+        } catch (error) {
+            payload = {}
+        }
         closingFromHost = false
         opened = true
         Qt.callLater(function() {
             root.ensureBoardPosition()
-            root.focusKeys()
+            if (payload.settings === true)
+                root.openSettings()
+            else
+                root.focusKeys()
         })
     }
 
     function close() {
         closingFromHost = true
+        settingsOpen = false
         focusKeys()
         opened = false
         flushSave()
@@ -232,7 +373,18 @@ Item {
     onNotebookChanged: scheduleSave()
     onCurrentToolChanged: scheduleSave()
     onPenWidthChanged: scheduleSave()
+    onSettingsChanged: scheduleSave()
     Component.onCompleted: prepareStateDir.running = true
+
+    // Colors for the toolbar, settings and tooltips: the active Omarchy theme (following
+    // theme switches), or Field Notes' own look when "Use Omarchy theme" is off.
+    OmarchyTheme {
+        id: omarchyTheme
+    }
+
+    ClassicTheme {
+        id: classicTheme
+    }
     Component.onDestruction: flushSave()
 
     Timer {
@@ -246,6 +398,53 @@ Item {
         id: prepareStateDir
 
         command: ["mkdir", "-p", "-m", "700", root.stateDir]
+    }
+
+    Process {
+        id: prepareExportDir
+
+        command: ["mkdir", "-p", "--", root.exportDir]
+        onExited: function(exitCode) {
+            if (exitCode !== 0) {
+                root.finishExport(false)
+                return
+            }
+            paper.exportImage(root.pendingExport, function(ok) {
+                if (!ok) {
+                    root.finishExport(false)
+                    return
+                }
+                copyPath.command = root.pendingMode === "image"
+                    ? ["sh", "-c", "exec wl-copy --type image/png < \"$1\"", "field-notes", root.pendingExport]
+                    : ["wl-copy", root.pendingExport]
+                copyPath.running = true
+            })
+        }
+    }
+
+    Process {
+        id: openFolder
+    }
+
+    Process {
+        id: copyPath
+
+        onExited: function(exitCode) {
+            root.finishExport(exitCode === 0)
+        }
+    }
+
+    // The version shown on the paper comes from the plugin's own manifest.
+    FileView {
+        path: decodeURIComponent(Qt.resolvedUrl("manifest.json").toString().replace(/^file:\/\//, ""))
+        printErrors: false
+        onLoaded: {
+            try {
+                root.appVersion = String(JSON.parse(text()).version || "")
+            } catch (error) {
+                root.appVersion = ""
+            }
+        }
     }
 
     Process {
@@ -314,6 +513,12 @@ Item {
                 height: (tools.height + 36) * board.scale
             }
             Region {
+                x: board.x + settingsCard.x * board.scale
+                y: board.y + settingsCard.y * board.scale
+                width: root.settingsOpen ? settingsCard.width * board.scale : 0
+                height: root.settingsOpen ? settingsCard.height * board.scale : 0
+            }
+            Region {
                 x: board.x + dragClip.x * board.scale
                 y: board.y + dragClip.y * board.scale
                 width: dragClip.width * board.scale
@@ -341,12 +546,31 @@ Item {
             Keys.onPressed: function(event) {
                 var control = (event.modifiers & Qt.ControlModifier) !== 0
                 var shift = (event.modifiers & Qt.ShiftModifier) !== 0
+                if (control && event.key === Qt.Key_Comma) {
+                    root.toggleSettings()
+                    event.accepted = true
+                    return
+                }
+                if (root.settingsOpen) {
+                    if (event.key === Qt.Key_Escape)
+                        root.closeSettings()
+                    event.accepted = true
+                    return
+                }
                 if (control && event.key === Qt.Key_Z && shift) {
                     root.redo()
                     event.accepted = true
                     return
                 } else if (control && event.key === Qt.Key_Z) {
                     root.undo()
+                    event.accepted = true
+                    return
+                } else if (control && event.key === Qt.Key_C) {
+                    root.copyImagePath(shift)
+                    event.accepted = true
+                    return
+                } else if (event.key === Qt.Key_F2) {
+                    paper.editTitle()
                     event.accepted = true
                     return
                 } else if (control && event.key === Qt.Key_Y) {
@@ -371,6 +595,10 @@ Item {
                     return
                 } else if (!control && event.key === Qt.Key_G) {
                     root.cyclePaper()
+                    event.accepted = true
+                    return
+                } else if (!control && event.key === Qt.Key_S) {
+                    root.cycleSize()
                     event.accepted = true
                     return
                 } else if (!control && event.key === Qt.Key_N) {
@@ -434,12 +662,17 @@ Item {
 
                     x: root.dockLayout.paperX
                     y: root.dockLayout.paperY
-                    width: 760
-                    height: 560
+                    width: root.currentDocument.page.width
+                    height: root.currentDocument.page.height
                     document: root.currentDocument
                     currentTool: root.currentTool
                     penWidth: root.penWidth
                     statusText: root.saveStatus
+                    tilted: root.settings.tilt
+                    mouseSmoothing: root.smoothingStrength[root.settings.smoothing]
+                    eraserRadius: root.eraserRadii[root.settings.eraser]
+                    dimmed: root.settingsOpen
+                    onDimClicked: root.closeSettings()
                     sheetIndex: root.notebook.current
                     sheetCount: root.notebook.sheets.length
                     onCommitRequested: function(nextDocument) {
@@ -447,6 +680,12 @@ Item {
                     }
                     onEditingFinished: root.focusKeys()
                     onPaperRequested: root.cyclePaper()
+                    onSizeRequested: root.cycleSize()
+                    onTitleCommitted: function(title) {
+                        root.renameSheet(title)
+                    }
+                    version: root.appVersion
+                    theme: root.theme
                     onToolRequested: function(tool) {
                         root.selectTool(tool)
                     }
@@ -462,6 +701,7 @@ Item {
                     width: implicitWidth
                     height: implicitHeight
                     side: root.toolbarSide
+                    theme: root.theme
                     sheetIndex: root.notebook.current
                     sheetCount: root.notebook.sheets.length
                     canAddSheet: Notebook.canAdd(root.notebook)
@@ -483,11 +723,64 @@ Item {
                         root.selectSheet(index)
                     }
                     onNewSheetRequested: root.addSheet()
+                    onCopyImageRequested: root.copyImagePath()
+                    onSettingsRequested: root.toggleSettings()
+                    copyMode: root.settings.clipboard
+                    settingsOpen: root.settingsOpen
                     onCloseRequested: root.requestClose()
                     onGripMoved: function(sceneX, sceneY) {
                         root.dragToolbar(sceneX, sceneY)
                     }
                     onGripReleased: root.focusKeys()
+                }
+
+                SettingsPanel {
+                    id: settingsCard
+
+                    // Centred on the paper, within the area beside the toolbar.
+                    x: Math.max(root.settingsArea.x, Math.min(root.settingsArea.x + root.settingsArea.width - width,
+                        Math.round(paper.x + (paper.width - width) / 2)))
+                    y: Math.max(root.settingsArea.y, Math.min(root.settingsArea.y + root.settingsArea.height - height,
+                        Math.round(paper.y + (paper.height - height) / 2)))
+                    z: 40
+                    width: implicitWidth
+                    height: implicitHeight
+                    maxWidth: root.settingsArea.width
+                    maxHeight: root.settingsArea.height
+                    opacity: root.settingsOpen ? 1 : 0
+                    scale: root.settingsOpen ? 1 : 0.97
+                    visible: opacity > 0
+                    theme: root.theme
+                    settings: root.settings
+                    toolbarSide: root.toolbarSide
+                    version: root.appVersion
+                    notesPath: stateFile.path
+                    defaultExportDir: root.defaultExportDir
+                    home: root.home
+                    onSettingChanged: function(key, value) {
+                        root.setSetting(key, value)
+                    }
+                    onToolbarSideRequested: function(side) {
+                        root.setToolbarSide(side)
+                    }
+                    onOpenExportFolderRequested: root.openExportFolder()
+                    onCenterBoardRequested: root.centerBoard(true)
+                    onResetRequested: root.resetSettings()
+                    onCloseRequested: root.closeSettings()
+                    onEditingFinished: root.focusKeys()
+
+                    Behavior on opacity {
+                        NumberAnimation {
+                            duration: 140
+                        }
+                    }
+
+                    Behavior on scale {
+                        NumberAnimation {
+                            duration: 160
+                            easing.type: Easing.OutCubic
+                        }
+                    }
                 }
 
                 Item {
@@ -513,6 +806,7 @@ Item {
                     }
 
                     Tooltip {
+                        theme: root.theme
                         text: "Drag to move"
                         shortcut: "Arrows"
                         side: "bottom"

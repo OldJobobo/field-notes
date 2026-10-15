@@ -60,3 +60,10 @@ test("keeps an independent undo history per sheet", () => {
   assert.equal(notebook.sheets[1].past.length, 1)
   assert.equal(Notebook.replaceCurrent(notebook, notebook.sheets[0]), notebook)
 })
+
+test("a titled sheet is kept when left, even with nothing drawn on it", () => {
+  const titled = History.create(Model.setTitle(Model.createDocument(760, 560), "Ideas"))
+  const notebook = Notebook.create([inked(), titled], 1)
+  assert.equal(Notebook.select(notebook, 0).sheets.length, 2)
+  assert.equal(Notebook.canAdd(notebook), true)
+})

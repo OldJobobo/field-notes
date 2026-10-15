@@ -282,7 +282,8 @@ test("clicking the paper label or pressing G changes the sheet's paper", () => {
   assert.match(panel, /function cyclePaper\(\) \{\s*focusKeys\(\)[\s\S]*?DocumentModel\.setPaper\(currentDocument, DocumentModel\.nextPaper\(/)
   assert.match(panel, /Qt\.Key_G\) \{\s*root\.cyclePaper\(\)/)
   assert.match(panel, /onPaperRequested: root\.cyclePaper\(\)/)
-  assert.match(panel, /createDocument\(760, 560, currentDocument\.paper\)/, "new sheets start on the current paper")
+  assert.match(panel, /createSheet\(DocumentModel\.sizeName\(currentDocument\), currentDocument\.paper\)/,
+    "new sheets start with the current size and paper")
   assert.match(paper, /onPaperTypeChanged: graph\.requestPaint\(\)/)
   for (const type of ["graph", "dots", "ruled", "plain"])
     assert.match(paper, new RegExp(`${type}: "`))
@@ -290,6 +291,129 @@ test("clicking the paper label or pressing G changes the sheet's paper", () => {
   const z = Number(/\n {12}z: (\d+)/.exec(label)[1])
   const pointerZ = Number(/id: editorPointer[\s\S]*?z: (\d+)/.exec(paper)[1])
   assert.ok(z > pointerZ, "the paper label must sit above the drawing surface to receive clicks")
-  assert.match(label, /onClicked: root\.paperRequested\(\)/)
-  assert.match(label, /Tooltip\s*\{[\s\S]*?text: "Change paper"[\s\S]*?shortcut: "G"/)
+  assert.match(label, /HeaderLabel\s*\{\s*id: paperLabel[\s\S]*?action: "Change paper"\s*shortcut: "G"[\s\S]*?onActivated: root\.paperRequested\(\)/)
+  const header = read("HeaderLabel.qml")
+  assert.match(header, /Tooltip\s*\{[\s\S]*?text: root\.notice \|\| root\.action/)
+})
+
+test("Ctrl+C saves the sheet as a PNG and copies its path", () => {
+  const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
+  const tools = read("ToolIsland.qml")
+  assert.match(panel, /control && event\.key === Qt\.Key_C\) \{\s*root\.copyImagePath\(shift\)/)
+  assert.match(panel, /function copyImagePath\(alternate\) \{\s*focusKeys\(\)/, "an open note is committed before export")
+  assert.match(panel, /XDG_PICTURES_DIR[\s\S]*?\/Pictures"\) \+ "\/field-notes"/)
+  assert.match(panel, /DocumentModel\.slug\(currentDocument\.title\)/)
+  assert.match(panel, /Qt\.formatDateTime\(new Date\(\), "yyyyMMdd-HHmmss"\) \+ "\.png"/, "every export is a new file")
+  assert.match(panel, /command: \["mkdir", "-p", "--", root\.exportDir\]/)
+  assert.match(panel, /: \["wl-copy", root\.pendingExport\]/, "by default the path is copied")
+  assert.match(paper, /function exportImage\(path, done\)[\s\S]*?selectedObjectId = ""[\s\S]*?exporting = true/)
+  assert.match(paper, /sheet\.grabToImage\(/, "the unrotated sheet is captured, not the tilted board")
+  assert.match(paper, /visible: !root\.exporting\s*width: Math\.max\(68, statusLabel/, "the save chip stays off exports")
+  assert.match(tools, /"Copy image path"/)
+  assert.match(tools, /function exportFinished\(ok, mode\)/)
+})
+
+test("sheets are renamed in place from the header and the version prints in the footer", () => {
+  const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
+  const title = read("TitleField.qml")
+  assert.match(paper, /TitleField\s*\{[\s\S]*?text: root\.sheetTitle[\s\S]*?onFinished: root\.editingFinished\(\)/)
+  assert.match(paper, /root\.editingObjectId !== "" \|\| titleField\.editing/, "a paper click commits the title first")
+  assert.match(panel, /Qt\.Key_F2\) \{\s*paper\.editTitle\(\)/)
+  assert.match(panel, /DocumentModel\.setTitle\(currentDocument, title\)/)
+  assert.match(title, /Keys\.onEscapePressed: root\.finish\(false\)/)
+  assert.match(title, /onActiveFocusChanged:[\s\S]*?root\.finish\(true\)/, "clicking away keeps the edit")
+  assert.match(panel, /Qt\.resolvedUrl\("manifest\.json"\)/, "the version comes from the manifest, not a copy")
+  assert.match(paper, /"v" \+ root\.version/)
+})
+
+test("sheets come in three sizes, changed from the header or S, without moving the paper", () => {
+  const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
+  assert.match(paper, /HeaderLabel\s*\{\s*id: sizeLabel[\s\S]*?action: "Change size"\s*shortcut: "S"[\s\S]*?onActivated: root\.sizeRequested\(\)/)
+  assert.match(panel, /Qt\.Key_S\) \{\s*root\.cycleSize\(\)/)
+  assert.match(panel, /onSizeRequested: root\.cycleSize\(\)/)
+  assert.match(panel, /function cycleSize\(\) \{\s*focusKeys\(\)[\s\S]*?paper\.refuseSize\([\s\S]*?DocumentModel\.setSize\(/)
+  assert.match(panel, /width: root\.currentDocument\.page\.width\s*height: root\.currentDocument\.page\.height/)
+  assert.match(panel, /Layout\.dock\(toolbarSide, currentDocument\.page\.width, currentDocument\.page\.height,/)
+  assert.doesNotMatch(panel, /^\s*notebook = Notebook\.(replaceCurrent|select|add)/m, "every notebook change keeps the paper in place")
+  assert.match(panel, /function setNotebook\(next\)[\s\S]*?centerX - \(paper\.x \+ paper\.width \/ 2\) \* board\.scale/)
+  assert.match(paper, /onWidthChanged: root\.repaintAll\(\)/, "canvases repaint at the new size")
+  assert.match(read("HeaderLabel.qml"), /Tooltip\s*\{\s*x: root\.width - width/, "header tooltips open over the paper, not under the toolbar")
+})
+
+test("the toolbar and tooltips take every color from the active Omarchy theme", () => {
+  const theme = read("OmarchyTheme.qml")
+  const panel = read("Panel.qml")
+  assert.match(theme, /import qs\.Commons/)
+  assert.match(theme, /Color\.composed\("field-notes\.background", "field-notes\.background-alpha",\s*Color\.pick\("popups\.background"/)
+  assert.match(theme, /Style\.hoverFillFor\(text, accent\)/, "button states follow [controls] like the shell's Button")
+  assert.match(theme, /tooltipBackground: Color\.tooltip\.background/)
+  assert.match(theme, /radius: Style\.cornerRadius/)
+  assert.match(panel, /OmarchyTheme\s*\{\s*id: omarchyTheme\s*\}/)
+  assert.doesNotMatch(panel, /\btheme: theme\b/, "binding theme to itself would loop")
+  for (const file of ["ToolIsland.qml", "ToolButton.qml", "Tooltip.qml"]) {
+    const source = read(file).replace(/shadowColor: "#[0-9a-fA-F]+"/, "")
+    assert.doesNotMatch(source, /"#[0-9a-fA-F]{3,8}"/, `${file} must not hard-code colors`)
+    assert.match(source, /property QtObject theme/)
+  }
+  assert.match(read("ToolButton.qml"), /color: mouse\.pressed \? root\.theme\.pressedFill\s*: root\.hot \? root\.theme\.hoverFill\s*: root\.selected/,
+    "pressed, hover, selected: the shell's state precedence")
+})
+
+test("the Omarchy and classic themes are interchangeable", () => {
+  const names = file => [...read(file).matchAll(/readonly property \w+ (\w+)/g)].map(match => match[1]).sort()
+  assert.deepEqual(names("ClassicTheme.qml"), names("OmarchyTheme.qml"), "both themes must define the same properties")
+  assert.doesNotMatch(read("ClassicTheme.qml"), /qs\.Commons/, "the classic look must not depend on the shell theme")
+  assert.match(read("Panel.qml"), /readonly property QtObject theme: settings\.theme \? omarchyTheme : classicTheme/)
+})
+
+test("a settings panel opens from the toolbar or Ctrl+, and every setting does something", () => {
+  const panel = read("Panel.qml")
+  const card = read("SettingsPanel.qml")
+  const tools = read("ToolIsland.qml")
+  const paper = read("PaperSurface.qml")
+  assert.match(tools, /text: "Settings"[\s\S]*?shortcut: "Ctrl\+,"[\s\S]*?onActivated: root\.settingsRequested\(\)/)
+  assert.match(panel, /control && event\.key === Qt\.Key_Comma\) \{\s*root\.toggleSettings\(\)/)
+  assert.match(panel, /if \(root\.settingsOpen\) \{\s*if \(event\.key === Qt\.Key_Escape\)\s*root\.closeSettings\(\)/,
+    "while settings are open, Esc closes them and tool shortcuts do nothing")
+  assert.match(panel, /width: root\.settingsOpen \? settingsCard\.width \* board\.scale : 0/, "the card receives clicks")
+  assert.match(panel, /onDimClicked: root\.closeSettings\(\)/)
+  assert.match(panel, /function close\(\) \{[\s\S]*?settingsOpen = false/)
+  assert.match(panel, /DocumentModel\.serialize\([\s\S]*?\}, settings\)\)/, "settings are saved with the notes")
+  assert.match(panel, /settings = restored\.settings/)
+  assert.match(panel, /onSettingsChanged: scheduleSave\(\)/)
+
+  for (const key of ["theme", "tilt", "smoothing", "eraser", "clipboard", "exportDir"])
+    assert.match(card, new RegExp(`settingChanged\\("${key}"`), `the card offers ${key}`)
+  assert.match(card, /toolbarSideRequested\(value\)/)
+  assert.match(panel, /tilted: root\.settings\.tilt/)
+  assert.match(paper, /rotation: tilted \? 0\.8 : 0/)
+  assert.match(panel, /mouseSmoothing: root\.smoothingStrength\[root\.settings\.smoothing\]/)
+  assert.match(paper, /steadyStroke && mouseSmoothing > 0/, "smoothing off must not divide by zero")
+  assert.match(panel, /eraserRadius: root\.eraserRadii\[root\.settings\.eraser\]/)
+  assert.match(panel, /pendingMode === "image"\s*\? \["sh", "-c", "exec wl-copy --type image\/png < \\"\$1\\"", "field-notes", root\.pendingExport\]/,
+    "the file path is passed as an argument, never spliced into the shell command")
+  assert.match(panel, /exportDir: settings\.exportDir \? expandHome\(settings\.exportDir\) : defaultExportDir/)
+  assert.match(card, /Keys\.onEscapePressed: \{[\s\S]*?Qt\.binding\(/, "Esc in the folder field keeps it bound to the saved value")
+})
+
+test("right-clicking the bar icon opens Field Notes at its settings", () => {
+  const widget = read("BarWidget.qml")
+  const panel = read("Panel.qml")
+  assert.match(widget, /mouseButton === Qt\.RightButton\)\s*root\.bar\.run\("omarchy-shell shell summon jobo\.field-notes '\{\\"settings\\":true\}'"\)/,
+    "summon, not toggle, so a right-click never closes an open panel")
+  assert.match(panel, /function open\(payloadJson\) \{[\s\S]*?JSON\.parse\(payloadJson \|\| "\{\}"\)[\s\S]*?catch[\s\S]*?payload\.settings === true\)\s*root\.openSettings\(\)/,
+    "a malformed payload must not stop the panel from opening")
+})
+
+test("Ctrl+Shift+C copies whichever of path or image Ctrl+C does not", () => {
+  const panel = read("Panel.qml")
+  assert.match(panel, /control && event\.key === Qt\.Key_C\) \{\s*root\.copyImagePath\(shift\)/)
+  assert.match(panel, /pendingMode = alternate \? \(preferred === "image" \? "path" : "image"\) : preferred/)
+  assert.match(panel, /copyPath\.command = root\.pendingMode === "image"/, "the copy follows the key used, not just the setting")
+  assert.match(panel, /tools\.exportFinished\(ok, pendingMode\)/)
+  assert.match(read("ToolIsland.qml"), /root\.exportedMode === "image" \? "Image copied" : "Image path copied"/,
+    "the confirmation names what was actually copied")
 })

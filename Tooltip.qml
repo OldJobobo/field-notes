@@ -14,6 +14,8 @@ Rectangle {
     property bool force: false
     property bool alert: false
     property bool ready: false
+    // OmarchyTheme.qml or ClassicTheme.qml, chosen in settings.
+    property QtObject theme
 
     // Positioned arithmetically: switching anchors at runtime, when the toolbar docks
     // elsewhere, can leave stale conflicting anchors and a misplaced tooltip.
@@ -25,10 +27,10 @@ Rectangle {
         : Math.round((parent.height - height) / 2)
     width: row.implicitWidth + 20
     height: 30
-    radius: 7
-    color: "#1f1d1a"
+    radius: theme.radius
+    color: theme.tooltipBackground
     border.width: 1
-    border.color: alert ? "#d98672" : "#4d483f"
+    border.color: alert ? theme.danger : theme.tooltipBorder
     opacity: force || (hovered && ready) ? 1 : 0
     visible: opacity > 0
 
@@ -58,7 +60,7 @@ Rectangle {
         Text {
             anchors.verticalCenter: parent.verticalCenter
             text: root.text
-            color: "#f4efe4"
+            color: root.theme.tooltipText
             font.family: "monospace"
             font.pixelSize: 13
             textFormat: Text.PlainText
@@ -70,17 +72,17 @@ Rectangle {
             visible: root.shortcut !== ""
             width: Math.max(height, keyLabel.implicitWidth + 10)
             height: 19
-            radius: 4
-            color: "#38342e"
+            radius: Math.min(4, root.theme.radius)
+            color: root.theme.keycapFill
             border.width: 1
-            border.color: "#4d483f"
+            border.color: root.theme.keycapBorder
 
             Text {
                 id: keyLabel
 
                 anchors.centerIn: parent
                 text: root.shortcut
-                color: "#d6cfbd"
+                color: root.theme.tooltipText
                 font.family: "monospace"
                 font.pixelSize: 11
                 font.bold: true

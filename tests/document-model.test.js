@@ -7,6 +7,7 @@ test("creates a bounded empty document", () => {
     schemaVersion: 1,
     page: { width: 760, height: 560 },
     paper: "graph",
+    title: "",
     objects: [],
     ui: { tool: "pen", penWidth: 2.5 }
   })
@@ -175,4 +176,73 @@ test("each sheet has a paper type that cycles and survives edits", () => {
   assert.equal(loaded.documents[0].paper, "graph")
   const legacy = Model.sanitizeNotebook({ schemaVersion: 1, objects: [] }, 760, 560)
   assert.equal(legacy.documents[0].paper, "graph", "older single-sheet files load as graph paper")
+})
+
+test("sheets carry a one-line title that is saved, undoable and used for file names", () => {
+  const sheet = Model.createDocument(760, 560)
+  const titled = Model.setTitle(sheet, "  Meeting\n notes:   Q4!  ")
+  assert.equal(titled.title, "Meeting notes: Q4!")
+  assert.equal(Model.setTitle(titled, "Meeting notes: Q4!"), titled, "an unchanged title is a no-op")
+  assert.equal(Model.setTitle(sheet, "x".repeat(100)).title.length, 60)
+  assert.equal(Model.addStroke(titled, [[1, 1], [2, 2]], 2).title, titled.title, "edits keep the title")
+
+  assert.equal(Model.slug("Meeting notes: Q4!"), "meeting-notes-q4")
+  assert.equal(Model.slug("   "), "")
+  assert.equal(Model.slug("Ünïcode ✓"), "n-code", "file names stay plain ASCII")
+
+  assert.equal(Model.isBlank(sheet), true)
+  assert.equal(Model.isBlank(titled), false, "a named sheet is not blank")
+
+  const restored = Model.sanitizeNotebook(JSON.parse(Model.serialize([titled, sheet], 1, {})), 760, 560)
+  assert.deepEqual(restored.documents.map(document => document.title), ["Meeting notes: Q4!", ""])
+  const hostile = Model.sanitizeNotebook({ schemaVersion: 2, current: 1, sheets: [
+    { title: { evil: true }, objects: [] }, { title: "a\nb", objects: [] }] }, 760, 560)
+  assert.deepEqual(hostile.documents.map(document => document.title), ["a b"], "an untitled, empty, unopened sheet is dropped")
+})
+
+test("sheets resize between three sizes without cutting off or rescaling content", () => {
+  assert.deepEqual(Model.SIZE_ORDER, ["small", "medium", "large"])
+  const medium = Model.createSheet("medium", "dots")
+  assert.deepEqual([medium.page, medium.paper], [{ width: 760, height: 560 }, "dots"])
+  assert.equal(Model.sizeName(Model.createSheet("small")), "small")
+  assert.equal(Model.sizeName(Model.createSheet("bogus")), "medium")
+
+  const large = Model.setSize(medium, "large")
+  assert.deepEqual(large.page, { width: 1040, height: 760 })
+  assert.equal(Model.setSize(large, "large"), large, "same size is a no-op")
+  assert.equal(Model.nextSize(medium), "large")
+  assert.equal(Model.nextSize(large), "small")
+
+  const inked = Model.addStroke(large, [[10, 10], [900, 700]], 4)
+  assert.equal(Model.setSize(inked, "small"), inked, "ink beyond the smaller sheet refuses the shrink")
+  assert.equal(Model.nextSize(inked), "large", "no smaller size fits, so the size stays")
+  const corner = Model.addText(medium, 320, 300, "note") // reaches x = 540, past the small sheet
+  assert.equal(Model.nextSize(Model.setSize(corner, "large")), "medium", "from large, the small sheet is skipped")
+  assert.equal(Model.setSize(corner, "small"), corner)
+  assert.deepEqual(Model.setSize(corner, "large").objects, corner.objects, "content keeps its place and scale")
+
+  const restored = Model.sanitizeNotebook(JSON.parse(Model.serialize([inked, Model.createSheet("small")], 1, {})), 760, 560)
+  assert.deepEqual(restored.documents.map(Model.sizeName), ["large", "small"])
+  assert.deepEqual(restored.documents[0].objects, inked.objects, "large-sheet ink is not clamped to the default size")
+  const legacy = Model.sanitizeNotebook({ schemaVersion: 2, sheets: [{ objects: [] }] }, 760, 560)
+  assert.equal(Model.sizeName(legacy.documents[0]), "medium", "sheets saved before sizes load as medium")
+})
+
+test("settings load with safe defaults and keep only valid values", () => {
+  assert.deepEqual(Model.defaultSettings(), {
+    exportDir: "", theme: true, tilt: true, smoothing: "medium", eraser: "medium", clipboard: "path"
+  }, "defaults match how Field Notes behaves with nothing saved")
+  assert.deepEqual(Model.sanitizeSettings(null), Model.defaultSettings())
+  assert.deepEqual(Model.sanitizeSettings({
+    theme: false, tilt: "yes", smoothing: "strong", eraser: "huge", clipboard: "image",
+    exportDir: "  ~/Notes/out\nrm -rf /  ", extra: 1
+  }), { exportDir: "~/Notes/outrm -rf /", theme: false, tilt: true, smoothing: "strong", eraser: "medium", clipboard: "image" })
+  assert.equal(Model.sanitizeSettings({ exportDir: "x".repeat(900) }).exportDir.length, 512)
+  assert.equal(Model.sanitizeSettings({ exportDir: 42 }).exportDir, "")
+
+  const settings = Object.assign(Model.defaultSettings(), { theme: false, smoothing: "off" })
+  const restored = Model.sanitizeNotebook(JSON.parse(Model.serialize([Model.createSheet("medium")], 0, {}, settings)), 760, 560)
+  assert.deepEqual(restored.settings, settings)
+  const older = Model.sanitizeNotebook({ schemaVersion: 2, sheets: [{ objects: [] }] }, 760, 560)
+  assert.deepEqual(older.settings, Model.defaultSettings(), "files saved before settings existed get the defaults")
 })

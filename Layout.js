@@ -14,27 +14,35 @@ function clampPosition(value, extent, boardExtent, scale, edge) {
 }
 
 // Board geometry with the toolbar docked on one side of the paper. The toolbar is
-// toolLength long and thickness deep whichever way it faces. The space around the paper
-// leaves room for its tilt and shadow, and for the brass clip above it.
+// toolLength long and thickness deep whichever way it faces, and is centred on the
+// paper; when it is longer than a small sheet, the paper moves in to make room. The
+// space around the paper leaves room for its tilt and shadow, and for the clip above it.
 function dock(side, paperWidth, paperHeight, toolLength, thickness) {
     var edge = 18
     var gap = 26
+    var horizontal = side === "top" || side === "bottom"
     var layout = { paperX: 28, paperY: 58 }
     if (side === "left")
         layout.paperX = edge + thickness + gap
     else if (side === "top")
         layout.paperY = edge + thickness + 40
 
-    if (side === "top" || side === "bottom") {
+    var overhang = Math.max(0, Math.round(((toolLength + 2 * edge) - (horizontal ? paperWidth + 56 : paperHeight + 100)) / 2))
+    if (horizontal)
+        layout.paperX += overhang
+    else
+        layout.paperY += overhang
+
+    if (horizontal) {
         layout.toolX = layout.paperX + Math.round((paperWidth - toolLength) / 2)
         layout.toolY = side === "top" ? edge : layout.paperY + paperHeight + gap
-        layout.width = layout.paperX + paperWidth + 28
+        layout.width = Math.max(layout.paperX + paperWidth + 28, layout.toolX + toolLength + edge)
         layout.height = layout.paperY + paperHeight + (side === "bottom" ? gap + thickness + edge : 42)
     } else {
         layout.toolX = side === "left" ? edge : layout.paperX + paperWidth + gap
         layout.toolY = layout.paperY + Math.round((paperHeight - toolLength) / 2)
         layout.width = layout.paperX + paperWidth + (side === "right" ? gap + thickness + edge : 28)
-        layout.height = layout.paperY + paperHeight + 42
+        layout.height = Math.max(layout.paperY + paperHeight + 42, layout.toolY + toolLength + edge)
     }
     return layout
 }

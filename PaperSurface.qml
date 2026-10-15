@@ -13,7 +13,20 @@ Item {
     property color majorGrid: "#5f8394"
     property color marginRule: "#c0736a"
     readonly property string paperType: shownDocument && shownDocument.paper ? shownDocument.paper : "graph"
+    readonly property string sheetTitle: shownDocument && shownDocument.title ? shownDocument.title : ""
+    property string version: ""
+    // OmarchyTheme.qml or ClassicTheme.qml, for the tooltips; the paper itself keeps its own colors.
+    property QtObject theme
+    // True while the sheet is captured for export: screen-only chrome is hidden.
+    property bool exporting: false
+    // A slight angle, like a sheet resting on a desk (a setting).
+    property bool tilted: true
+    // Veils the sheet while settings are open; clicking the veil closes them.
+    property bool dimmed: false
+    property var exportRequest: null
     readonly property var paperLabels: ({ graph: "GRAPH 16", dots: "DOTS 16", ruled: "RULED 24", plain: "PLAIN" })
+    readonly property string sheetSize: shownDocument && shownDocument.page ? DocumentModel.sizeName(shownDocument) : "medium"
+    readonly property var sizeLabels: ({ small: "SMALL", medium: "MEDIUM", large: "LARGE" })
     property var document: DocumentModel.createDocument(width, height)
     // Uncommitted result of the gesture in progress (erase drag, stroke move, new note),
     // committed as a single undo step when the gesture ends.
@@ -37,6 +50,9 @@ Item {
     signal toolRequested(string tool)
     signal editingFinished()
     signal paperRequested()
+    signal sizeRequested()
+    signal titleCommitted(string title)
+    signal dimClicked()
 
     function pad2(value) {
         return value < 10 ? "0" + value : String(value)
@@ -55,6 +71,35 @@ Item {
         selectedObjectId = ""
         commit(DocumentModel.deleteObject(document, id))
         return true
+    }
+
+    // Explains, on the size label, why the size did not change.
+    function repaintAll() {
+        graph.requestPaint()
+        ink.requestPaint()
+        wet.requestPaint()
+    }
+
+    function refuseSize(message) {
+        sizeLabel.flash(message)
+    }
+
+    function editTitle() {
+        finishEditing()
+        titleField.startEditing()
+    }
+
+    // Saves the sheet as it would print: unrotated, without the save chip, eraser ring,
+    // selection or hover outlines. done(ok) is called once the file is written or fails.
+    function exportImage(path, done) {
+        if (exporting) {
+            done(false)
+            return
+        }
+        selectedObjectId = ""
+        exporting = true
+        exportRequest = { path: path, done: done }
+        exportDelay.restart() // let the hidden chrome and cleared selection repaint first
     }
 
     function clearSelection() {
@@ -126,7 +171,7 @@ Item {
     }
 
     function strokePoints() {
-        return steadyStroke ? Geometry.smoothStroke(activeStroke, mouseSmoothing) : activeStroke
+        return steadyStroke && mouseSmoothing > 0 ? Geometry.smoothStroke(activeStroke, mouseSmoothing) : activeStroke
     }
 
     function isSteadyInput(mouse) {
@@ -248,6 +293,26 @@ Item {
     }
     onShownDocumentChanged: ink.requestPaint()
     onPaperTypeChanged: graph.requestPaint()
+    onWidthChanged: root.repaintAll()
+    onHeightChanged: root.repaintAll()
+
+    Timer {
+        id: exportDelay
+
+        interval: 80
+        onTriggered: {
+            var request = root.exportRequest
+            var finish = function(ok) {
+                root.exporting = false
+                root.exportRequest = null
+                request.done(ok)
+            }
+            if (!sheet.grabToImage(function(result) {
+                finish(result.saveToFile(request.path))
+            }))
+                finish(false)
+        }
+    }
     onSelectedObjectIdChanged: ink.requestPaint()
     onCurrentToolChanged: {
         cancelGesture()
@@ -258,8 +323,15 @@ Item {
             editingFinished()
     }
 
-    rotation: 0.8
+    rotation: tilted ? 0.8 : 0
     transformOrigin: Item.Center
+
+    Behavior on rotation {
+        NumberAnimation {
+            duration: 160
+            easing.type: Easing.OutCubic
+        }
+    }
 
     // With more than one sheet, the next one peeks out from under the page.
     Rectangle {
@@ -399,7 +471,7 @@ Item {
                 : Qt.ArrowCursor
 
             onPressed: function(mouse) {
-                if (root.editingObjectId !== "") {
+                if (root.editingObjectId !== "" || titleField.editing) {
                     editorPointer.forceActiveFocus()
                     mouse.accepted = true
                     return
@@ -465,7 +537,7 @@ Item {
             id: eraserRing
 
             z: 16
-            visible: root.currentTool === "eraser" && editorPointer.containsMouse && root.editingObjectId === ""
+            visible: root.currentTool === "eraser" && editorPointer.containsMouse && root.editingObjectId === "" && !root.exporting
             x: editorPointer.mouseX - width / 2
             y: editorPointer.mouseY - height / 2
             width: root.eraserRadius * 2
@@ -491,23 +563,31 @@ Item {
                 color: "#375b5349"
             }
 
-            Text {
-                anchors.left: parent.left
-                anchors.leftMargin: 28
-                anchors.verticalCenter: parent.verticalCenter
-                text: "FIELD NOTES"
-                color: root.graphite
-                font.family: "monospace"
-                font.pixelSize: 16
-                font.bold: true
-                font.letterSpacing: 2.6
-                textFormat: Text.PlainText
+        }
+
+        TitleField {
+            id: titleField
+
+            x: 28
+            y: 23 - height / 2
+            z: 21
+            width: headerLabels.x - x - 24
+            height: implicitHeight
+            text: root.sheetTitle
+            theme: root.theme
+            ink: root.graphite
+            quiet: root.exporting
+            onCommitted: function(text) {
+                root.titleCommitted(text)
             }
+            onFinished: root.editingFinished()
         }
 
         // Above the drawing surface, so the paper type can be clicked; the rest of the row
         // takes no input, and the header stays drawable around it.
         Row {
+            id: headerLabels
+
             anchors.right: parent.right
             anchors.rightMargin: 19
             y: 23 - height / 2
@@ -523,55 +603,74 @@ Item {
                 textFormat: Text.PlainText
             }
 
-            Item {
+            HeaderLabel {
                 id: paperLabel
 
-                width: paperText.implicitWidth + 12
-                height: 22
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.paperLabels[root.paperType] || "GRAPH 16"
+                theme: root.theme
+                action: "Change paper"
+                shortcut: "G"
+                ink: root.graphite
+                quiet: root.exporting
+                onActivated: root.paperRequested()
+            }
 
-                Accessible.role: Accessible.Button
-                Accessible.name: "Paper: " + paperText.text + ". Change paper (G)"
-                Accessible.onPressAction: root.paperRequested()
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "/"
+                color: "#805b5349"
+                font.family: "monospace"
+                font.pixelSize: 9
+                textFormat: Text.PlainText
+            }
 
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 4
-                    color: paperMouse.pressed ? "#1a5b5349" : "transparent"
-                    border.width: 1
-                    border.color: paperMouse.containsMouse ? "#705b5349" : "transparent"
-                }
+            HeaderLabel {
+                id: sizeLabel
 
-                Text {
-                    id: paperText
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.sizeLabels[root.sheetSize] || "MEDIUM"
+                theme: root.theme
+                action: "Change size"
+                shortcut: "S"
+                ink: root.graphite
+                quiet: root.exporting
+                onActivated: root.sizeRequested()
+            }
+        }
 
-                    anchors.centerIn: parent
-                    text: root.paperLabels[root.paperType] || "GRAPH 16"
-                    color: paperMouse.containsMouse ? root.graphite : "#805b5349"
-                    font.family: "monospace"
-                    font.pixelSize: 9
-                    font.letterSpacing: 1.1
-                    textFormat: Text.PlainText
-                }
+        Row {
+            anchors.left: parent.left
+            anchors.leftMargin: 28
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 15
+            spacing: 6
 
-                MouseArea {
-                    id: paperMouse
+            Text {
+                text: "FIELD NOTES"
+                color: "#805b5349"
+                font.family: "monospace"
+                font.pixelSize: 9
+                font.bold: true
+                font.letterSpacing: 1.6
+                textFormat: Text.PlainText
+            }
 
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: root.paperRequested()
-                }
-
-                Tooltip {
-                    text: "Change paper"
-                    shortcut: "G"
-                    side: "bottom"
-                    hovered: paperMouse.containsMouse
-                }
+            Text {
+                visible: root.version !== ""
+                // Smaller type: one pixel down keeps the baselines level.
+                topPadding: 1
+                text: "v" + root.version
+                color: "#705b5349"
+                font.family: "monospace"
+                font.pixelSize: 8
+                font.letterSpacing: 0.6
+                textFormat: Text.PlainText
             }
         }
 
         Rectangle {
+            visible: !root.exporting
             width: Math.max(68, statusLabel.implicitWidth + 16)
             height: 18
             anchors.right: parent.right
@@ -594,6 +693,27 @@ Item {
                 font.bold: true
                 font.letterSpacing: 1.2
                 textFormat: Text.PlainText
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            z: 60
+            radius: parent.radius
+            color: "#000000"
+            opacity: root.dimmed ? 0.38 : 0
+            visible: opacity > 0
+
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 140
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onClicked: root.dimClicked()
             }
         }
     }

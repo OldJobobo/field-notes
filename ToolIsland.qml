@@ -15,12 +15,20 @@ Item {
     property bool canAddSheet: true
     // Paper side the toolbar is docked to; top and bottom lay it out horizontally.
     property string side: "right"
+    // OmarchyTheme.qml or ClassicTheme.qml, chosen in settings.
+    property QtObject theme
     readonly property bool horizontal: side === "top" || side === "bottom"
     // Tooltips open toward the paper, where the board always has room for them.
     readonly property string tooltipSide: side === "right" ? "left"
         : side === "left" ? "right"
         : side === "top" ? "bottom" : "top"
     readonly property bool lastSheet: sheetIndex >= sheetCount - 1
+    // Result of the last image export, shown on its button for a moment: "", "copied" or "failed".
+    property string exportState: ""
+    // What Ctrl+C puts on the clipboard: "path" or "image" (a setting).
+    property string copyMode: "path"
+    property string exportedMode: "path"
+    property bool settingsOpen: false
     readonly property var penWidths: [1.5, 2.5, 4, 7]
     signal toolSelected(string tool)
     signal undoRequested()
@@ -29,10 +37,19 @@ Item {
     signal penWidthRequested(real width)
     signal sheetRequested(int index)
     signal newSheetRequested()
+    signal copyImageRequested()
+    signal settingsRequested()
     signal closeRequested()
     // Grip drag in scene coordinates; the panel decides where the toolbar docks.
     signal gripMoved(real sceneX, real sceneY)
     signal gripReleased()
+
+    // mode: what was copied, "path" or "image" (Ctrl+Shift+C copies the other one).
+    function exportFinished(ok, mode) {
+        exportedMode = mode || copyMode
+        exportState = ok ? "copied" : "failed"
+        exportTimer.restart()
+    }
 
     function nextPenWidth() {
         for (var i = 0; i < penWidths.length; i++) {
@@ -51,6 +68,12 @@ Item {
     }
 
     Timer {
+        id: exportTimer
+        interval: 1800
+        onTriggered: root.exportState = ""
+    }
+
+    Timer {
         id: clearTimer
         interval: 2500
         onTriggered: root.clearArmed = false
@@ -59,10 +82,10 @@ Item {
     // Background only: the shadow layer would clip button tooltips drawn outside it.
     Rectangle {
         anchors.fill: parent
-        radius: 13
-        color: "#f02b2925"
-        border.width: 1
-        border.color: "#5a6f695d"
+        radius: root.theme.radius
+        color: root.theme.background
+        border.width: root.theme.borderWidth
+        border.color: root.theme.border
         layer.enabled: true
         layer.effect: MultiEffect {
             shadowEnabled: true
@@ -84,11 +107,12 @@ Item {
             anchors.centerIn: parent
             width: root.horizontal ? 1 : 18
             height: root.horizontal ? 18 : 1
-            color: "#4a6f695d"
+            color: root.theme.divider
         }
     }
 
     component Button: ToolButton {
+        theme: root.theme
         tooltipSide: root.tooltipSide
     }
 
@@ -120,7 +144,7 @@ Item {
                     y: root.horizontal ? (grip.height - 16) / 2 : (grip.height - 5) / 2 + index * 4
                     width: root.horizontal ? 1 : 16
                     height: root.horizontal ? 16 : 1
-                    color: gripHover.hovered || gripDrag.active ? "#c9c2b0" : "#6f695d"
+                    color: gripHover.hovered || gripDrag.active ? root.theme.hoverIcon : root.theme.subtle
                 }
             }
 
@@ -208,7 +232,7 @@ Item {
             Text {
                 anchors.centerIn: parent
                 text: (root.sheetIndex + 1) + "/" + root.sheetCount
-                color: "#a9a291"
+                color: root.theme.subtle
                 font.family: "monospace"
                 font.pixelSize: 10
                 font.bold: true
@@ -238,6 +262,17 @@ Item {
             onActivated: root.penWidthRequested(root.nextPenWidth())
         }
         Button {
+            text: root.exportState === "copied" ? (root.exportedMode === "image" ? "Image copied" : "Image path copied")
+                : root.exportState === "failed" ? "Couldn't save the image"
+                : root.copyMode === "image" ? "Copy image" : "Copy image path"
+            icon: root.exportState === "copied" ? "󰄬" : "󰆏"
+            shortcut: root.exportState === "" ? "Ctrl+C" : ""
+            selected: root.exportState !== ""
+            dangerous: root.exportState === "failed"
+            forceTooltip: root.exportState !== ""
+            onActivated: root.copyImageRequested()
+        }
+        Button {
             text: root.clearArmed ? "Click again to clear" : "Clear sheet"
             icon: "󰧧"
             dangerous: true
@@ -254,6 +289,13 @@ Item {
                     clearTimer.restart()
                 }
             }
+        }
+        Button {
+            text: "Settings"
+            icon: "󰢻"
+            shortcut: "Ctrl+,"
+            selected: root.settingsOpen
+            onActivated: root.settingsRequested()
         }
         Button {
             text: "Close"
