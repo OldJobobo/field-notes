@@ -3,55 +3,79 @@ import QtQuick
 Item {
     id: root
 
-    property string text: "TOOL"
-    property string glyph: "•"
+    // Name shown in the hover tooltip and exposed to accessibility tools.
+    property string text: ""
+    // Nerd Font glyph.
+    property string icon: ""
+    property string shortcut: ""
+    // When positive, a filled dot of this diameter replaces the icon (pen width preview).
+    property real dotSize: 0
     property bool selected: false
     property bool dangerous: false
-    property bool enabled: true
+    // Shows the tooltip immediately, e.g. while a destructive action awaits confirmation.
+    property bool forceTooltip: false
+    // Edge of the button the tooltip appears beyond: left, right, top or bottom.
+    property string tooltipSide: "left"
+    readonly property color iconColor: selected ? "#2b2925"
+        : dangerous ? "#d98672"
+        : mouse.containsMouse ? "#f0e9d8" : "#a9a291"
     signal activated()
 
-    implicitWidth: 58
-    implicitHeight: 43
-    opacity: enabled ? 1 : 0.38
+    implicitWidth: 40
+    implicitHeight: 40
+    opacity: enabled ? 1 : 0.3
+    // Lifts the open tooltip above the neighbouring buttons.
+    z: tooltip.visible ? 1 : 0
+
+    Accessible.role: Accessible.Button
+    Accessible.name: shortcut === "" ? text : text + " (" + shortcut + ")"
+    Accessible.onPressAction: {
+        if (root.enabled)
+            root.activated()
+    }
 
     Rectangle {
         anchors.fill: parent
-        radius: 5
-        color: root.selected ? "#d8d0bc" : mouse.containsMouse ? "#3b3933" : "transparent"
-        border.width: root.selected ? 1 : 0
-        border.color: root.selected ? "#f0e9d8" : "transparent"
+        radius: 9
+        color: root.selected ? (root.dangerous ? "#d98672" : "#e6dfcc")
+            : mouse.pressed ? "#26ffffff"
+            : mouse.containsMouse ? "#14ffffff" : "transparent"
+    }
 
-        Text {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.top: parent.top
-            anchors.topMargin: 5
-            text: root.glyph
-            color: root.selected ? "#2b2925" : root.dangerous ? "#d98672" : "#e1dac8"
-            font.family: "monospace"
-            font.pixelSize: 15
-            font.bold: true
-            textFormat: Text.PlainText
-        }
+    Text {
+        anchors.centerIn: parent
+        visible: root.dotSize <= 0
+        text: root.icon
+        color: root.iconColor
+        font.family: "JetBrainsMono Nerd Font"
+        font.pixelSize: 18
+        textFormat: Text.PlainText
+    }
 
-        Text {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 5
-            text: root.text
-            color: root.selected ? "#2b2925" : root.dangerous ? "#d98672" : "#aaa391"
-            font.family: "monospace"
-            font.pixelSize: 7
-            font.bold: true
-            font.letterSpacing: 0.6
-            textFormat: Text.PlainText
-        }
+    Rectangle {
+        anchors.centerIn: parent
+        visible: root.dotSize > 0
+        width: root.dotSize
+        height: root.dotSize
+        radius: root.dotSize / 2
+        color: root.iconColor
+    }
+
+    Tooltip {
+        id: tooltip
+
+        text: root.text
+        shortcut: root.shortcut
+        side: root.tooltipSide
+        hovered: mouse.containsMouse
+        force: root.forceTooltip
+        alert: root.dangerous && root.selected
     }
 
     MouseArea {
         id: mouse
 
         anchors.fill: parent
-        enabled: root.enabled
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.activated()

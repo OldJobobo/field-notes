@@ -68,9 +68,9 @@ test("base layer composes masked graph paper and a detached tool island", () => 
   assert.match(paper, /majorGrid/)
   assert.match(paper, /FIELD NOTES/)
 
-  for (const label of ["SELECT", "PEN", "ERASE", "TEXT", "UNDO", "REDO", "CLOSE"])
+  for (const label of ["Select", "Pen", "Erase", "Text", "Undo", "Redo", "Close"])
     assert.match(tools, new RegExp(`text:\\s*"${label}"`))
-  assert.match(tools, /"CLEAR"/)
+  assert.match(tools, /"Clear sheet"/)
 })
 
 test("paper and toolbar expose working editing actions", () => {
@@ -94,13 +94,14 @@ test("paper and toolbar expose working editing actions", () => {
   )
   assert.match(
     paper,
-    /onPositionChanged:[\s\S]*?root\.currentTool === "eraser"[\s\S]*?root\.eraseAt\(mouse\.x, mouse\.y\)/,
-    "dragging the eraser across an object must remove it"
+    /onPositionChanged:[\s\S]*?root\.currentTool === "eraser"[\s\S]*?root\.eraseAlong\(/,
+    "dragging the eraser must sweep the whole path, not just sparse pointer samples"
   )
+  assert.match(paper, /function eraseAlong\(from, to\)[\s\S]*?eraseAt\(/)
   assert.match(
     paper,
-    /onEraseRequested:[\s\S]*?selectedObjectId = ""[\s\S]*?editingObjectId = ""[\s\S]*?DocumentModel\.deleteObject/,
-    "text-note erase must clear delegate state before the commit destroys its delegate"
+    /function finishGesture\([\s\S]*?commit\(draftDocument\)/,
+    "an erase or move gesture must land in history as a single undo step"
   )
   assert.match(tools, /signal undoRequested/)
   assert.match(tools, /signal redoRequested/)
@@ -108,13 +109,57 @@ test("paper and toolbar expose working editing actions", () => {
   assert.match(tools, /clearArmed/)
 })
 
-test("text editor keeps focus while a newly inserted note is being edited", () => {
+test("keyboard focus returns to the sheet only when note editing ends", () => {
   const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
   assert.match(
     panel,
-    /onCommitRequested:[\s\S]*?root\.commitDocument\(nextDocument\)[\s\S]*?if \(paper\.editingObjectId === ""\)[\s\S]*?keyboardRoot\.forceActiveFocus\(\)/,
+    /onCommitRequested: function\(nextDocument\) \{\s*root\.commitDocument\(nextDocument\)\s*\}/,
     "document commits must not steal focus from an active TextEdit"
   )
+  assert.match(panel, /onEditingFinished: root\.focusKeys\(\)/)
+  assert.match(
+    panel,
+    /function focusKeys\(\)\s*\{[\s\S]*?keySink\.forceActiveFocus\(\)/,
+    "focusing the FocusScope itself would leave active focus inside a note editor"
+  )
+  assert.match(paper, /onEditingObjectIdChanged:[\s\S]*?editingFinished\(\)/)
+  for (const action of ["selectTool", "undo", "redo", "clearDocument"])
+    assert.match(panel, new RegExp(`function ${action}\\([^)]*\\) \\{\\s*focusKeys\\(\\)`),
+      `${action} must commit an open note edit first`)
+})
+
+test("board scale, input masks and drag bounds use the same coordinate transform", () => {
+  const panel = read("Panel.qml")
+  assert.match(panel, /scale: Layout\.fitScale\(surface\.width, surface\.height, width, height\)/)
+  assert.match(panel, /transformOrigin: Item\.TopLeft/)
+  for (const name of ["paper", "tools", "dragClip"]) {
+    assert.match(panel, new RegExp(`width: \\(?${name}\\.width[^\\n]*\\* board\\.scale`))
+    assert.match(panel, new RegExp(`height: \\(?${name}\\.height[^\\n]*\\* board\\.scale`))
+  }
+  assert.match(panel, /xAxis\.maximum:[^\n]*board\.width \* board\.scale/)
+  assert.match(panel, /yAxis\.maximum:[^\n]*board\.height \* board\.scale/)
+})
+
+test("toolbar reflects tool state without breaking the panel binding", () => {
+  const tools = read("ToolIsland.qml")
+  assert.doesNotMatch(tools, /root\.currentTool\s*=[^=]/, "assigning currentTool would break the binding from Panel")
+  assert.match(tools, /"Width "/)
+  assert.match(tools, /penWidthRequested\(root\.nextPenWidth\(\)\)/)
+})
+
+test("sheet persists atomically and never overwrites unread state", () => {
+  const panel = read("Panel.qml")
+  assert.match(panel, /import Quickshell\.Io/)
+  assert.match(panel, /FileView\s*\{/)
+  assert.match(panel, /atomicWrites:\s*true/)
+  assert.match(panel, /XDG_STATE_HOME/)
+  assert.match(panel, /function scheduleSave\(\)\s*\{\s*if \(!stateReady\)\s*return/)
+  assert.match(panel, /function saveNow\(\)\s*\{[\s\S]*?if \(!stateReady\)\s*return/)
+  assert.match(panel, /function restoreState\(text\)\s*\{\s*if \(stateReady\)\s*return/)
+  assert.match(panel, /DocumentModel\.sanitizeNotebook\(/)
+  assert.match(panel, /function close\(\)[\s\S]*?flushSave\(\)/)
+  assert.match(panel, /Component\.onDestruction:\s*flushSave\(\)/)
 })
 
 test("text notes can edit, select, move, and delete", () => {
@@ -132,12 +177,12 @@ test("text notes can edit, select, move, and delete", () => {
   assert.match(note, /Qt\.Key_(Escape|Return|Enter)/)
   assert.match(
     paper,
-    /function commitText\(id, text\)[\s\S]*?editingObjectId = ""[\s\S]*?selectedObjectId = ""[\s\S]*?DocumentModel\.updateText/,
+    /function commitText\(id, text, height\)[\s\S]*?editingObjectId = ""[\s\S]*?selectedObjectId = ""[\s\S]*?DocumentModel\.updateText/,
     "committing text must leave a clean final note with no input-style selection box"
   )
   assert.match(
     note,
-    /onActiveFocusChanged:[\s\S]*?root\.editing[\s\S]*?root\.commitRequested\(root\.objectData\.id, text\)/,
+    /onActiveFocusChanged:[\s\S]*?root\.editing[\s\S]*?root\.commitRequested\(root\.objectData\.id, text, root\.height\)/,
     "clicking away must commit the active text draft"
   )
   assert.match(
@@ -151,4 +196,100 @@ test("text notes can edit, select, move, and delete", () => {
     "leaving edit mode must discard an uncommitted draft"
   )
   assert.match(panel, /Qt\.Key_Delete/)
+})
+
+test("sheets switch through the notebook with per-sheet history", () => {
+  const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
+  assert.match(panel, /import "Notebook\.js" as Notebook/)
+  assert.match(panel, /readonly property var historyState: notebook\.sheets\[notebook\.current\]/)
+  assert.match(panel, /onNotebookChanged: scheduleSave\(\)/)
+  assert.match(
+    panel,
+    /function leaveSheet\(\) \{\s*focusKeys\(\)[\s\S]*?cancelGesture\(\)[\s\S]*?clearSelection\(\)/,
+    "an open note must be committed to the sheet it belongs to before switching"
+  )
+  for (const action of ["selectSheet", "addSheet"])
+    assert.match(panel, new RegExp(`function ${action}\\([^)]*\\) \\{\\s*leaveSheet\\(\\)`))
+  assert.match(panel, /Qt\.Key_PageUp/)
+  assert.match(panel, /Qt\.Key_PageDown/)
+  assert.match(panel, /Qt\.Key_N/)
+  assert.match(paper, /root\.sheetIndex \+ 1/)
+  const tools = read("ToolIsland.qml")
+  assert.match(tools, /"Previous sheet"/)
+  assert.match(tools, /root\.lastSheet \? "New sheet" : "Next sheet"/)
+})
+
+test("toolbar docks to any paper side and is laid out from the dock geometry", () => {
+  const panel = read("Panel.qml")
+  const tools = read("ToolIsland.qml")
+  assert.match(panel, /width: root\.dockLayout\.width/)
+  assert.match(panel, /x: root\.dockLayout\.paperX/)
+  assert.match(panel, /x: root\.dockLayout\.toolX/)
+  assert.match(panel, /Layout\.nearestSide\(/)
+  assert.match(panel, /toolbar: toolbarSide/)
+  assert.match(tools, /DragHandler\s*\{[\s\S]*?target: null/)
+  assert.match(tools, /columns: root\.horizontal \? children\.length : 1/)
+  assert.match(tools, /tooltipSide: root\.tooltipSide/)
+})
+
+test("only mouse and touchpad strokes are smoothed, live and on commit alike", () => {
+  const paper = read("PaperSurface.qml")
+  assert.match(paper, /PointHandler\s*\{\s*id: pointerKind/)
+  assert.match(paper, /device\.type === PointerDevice\.Mouse/)
+  assert.match(paper, /root\.steadyStroke = root\.isSteadyInput\(mouse\)/)
+  assert.match(paper, /function finishGesture\([\s\S]*?var points = strokePoints\(\)/)
+  assert.match(paper, /root\.traceStroke\(ctx, root\.strokePoints\(\)/)
+  assert.doesNotMatch(paper, /jobo\.field-notes/)
+})
+
+test("tooltips follow the docked side without switching anchors at runtime", () => {
+  const tooltip = read("Tooltip.qml")
+  assert.doesNotMatch(tooltip, /anchors\.(left|right|top|bottom|horizontalCenter|verticalCenter):[^\n]*\?/,
+    "conditional anchors conflict while the toolbar re-docks and leave the tooltip misplaced")
+  assert.match(tooltip, /x: side === "left"/)
+  assert.match(tooltip, /y: side === "top"/)
+  assert.match(read("ToolButton.qml"), /Tooltip\s*\{[\s\S]*?side: root\.tooltipSide/)
+})
+
+test("toolbar tooltips draw above every other part of the board", () => {
+  const panel = read("Panel.qml")
+  const board = panel.slice(panel.indexOf("id: board"))
+  const zOf = id => {
+    const block = board.slice(board.indexOf(`id: ${id}`))
+    const match = /\n {20}z: (\d+)/.exec(block.slice(0, block.indexOf("\n                }")))
+    return match ? Number(match[1]) : 0
+  }
+  for (const id of ["paper", "dragClip"])
+    assert.ok(zOf("tools") > zOf(id), `the toolbar (z ${zOf("tools")}) must stack above ${id} (z ${zOf(id)})`)
+})
+
+test("the board is moved by a drawn binder clip with a shared tooltip, not a text label", () => {
+  const panel = read("Panel.qml")
+  const clip = read("BinderClip.qml")
+  const dragClip = panel.slice(panel.indexOf("id: dragClip"))
+  assert.match(dragClip, /BinderClip\s*\{[\s\S]*?tilt: paper\.rotation[\s\S]*?lifted: clipDrag\.active/)
+  assert.match(dragClip, /Tooltip\s*\{[\s\S]*?text: "Drag to move"/)
+  assert.match(dragClip, /DragHandler\s*\{\s*id: clipDrag\s*target: board/)
+  assert.doesNotMatch(panel, /DRAG {2}• {2}ARROWS/)
+  assert.match(clip, /import QtQuick\.Shapes/)
+  assert.match(clip, /preferredRendererType: Shape\.CurveRenderer/)
+})
+
+test("clicking the paper label or pressing G changes the sheet's paper", () => {
+  const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
+  assert.match(panel, /function cyclePaper\(\) \{\s*focusKeys\(\)[\s\S]*?DocumentModel\.setPaper\(currentDocument, DocumentModel\.nextPaper\(/)
+  assert.match(panel, /Qt\.Key_G\) \{\s*root\.cyclePaper\(\)/)
+  assert.match(panel, /onPaperRequested: root\.cyclePaper\(\)/)
+  assert.match(panel, /createDocument\(760, 560, currentDocument\.paper\)/, "new sheets start on the current paper")
+  assert.match(paper, /onPaperTypeChanged: graph\.requestPaint\(\)/)
+  for (const type of ["graph", "dots", "ruled", "plain"])
+    assert.match(paper, new RegExp(`${type}: "`))
+  const label = paper.slice(paper.indexOf("// Above the drawing surface"))
+  const z = Number(/\n {12}z: (\d+)/.exec(label)[1])
+  const pointerZ = Number(/id: editorPointer[\s\S]*?z: (\d+)/.exec(paper)[1])
+  assert.ok(z > pointerZ, "the paper label must sit above the drawing surface to receive clicks")
+  assert.match(label, /onClicked: root\.paperRequested\(\)/)
+  assert.match(label, /Tooltip\s*\{[\s\S]*?text: "Change paper"[\s\S]*?shortcut: "G"/)
 })

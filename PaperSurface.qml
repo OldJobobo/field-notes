@@ -8,77 +8,269 @@ Item {
 
     property color paperColor: "#ded7c5"
     property color graphite: "#423e38"
+    property color selectionColor: "#b18d52"
     property color minorGrid: "#7898a8"
     property color majorGrid: "#5f8394"
+    property color marginRule: "#c0736a"
+    readonly property string paperType: shownDocument && shownDocument.paper ? shownDocument.paper : "graph"
+    readonly property var paperLabels: ({ graph: "GRAPH 16", dots: "DOTS 16", ruled: "RULED 24", plain: "PLAIN" })
     property var document: DocumentModel.createDocument(width, height)
+    // Uncommitted result of the gesture in progress (erase drag, stroke move, new note),
+    // committed as a single undo step when the gesture ends.
+    property var draftDocument: null
+    readonly property var shownDocument: draftDocument || document
     property string currentTool: "pen"
     property real penWidth: 2.5
+    property real eraserRadius: 10
+    // Mouse and touchpad strokes are steadied (see Geometry.smoothStroke); tablet pens
+    // already report smooth, precise positions and are kept exactly as drawn.
+    property real mouseSmoothing: 3.5
+    property bool steadyStroke: false
+    property string statusText: "READY"
     property var activeStroke: []
+    property var gestureOrigin: null
     property string selectedObjectId: ""
     property string editingObjectId: ""
+    property int sheetIndex: 0
+    property int sheetCount: 1
     signal commitRequested(var nextDocument)
     signal toolRequested(string tool)
+    signal editingFinished()
+    signal paperRequested()
+
+    function pad2(value) {
+        return value < 10 ? "0" + value : String(value)
+    }
+
+    function commit(nextDocument) {
+        draftDocument = null
+        if (!DocumentModel.sameObjects(nextDocument, document))
+            commitRequested(nextDocument)
+    }
 
     function deleteSelected() {
+        if (selectedObjectId === "" || editingObjectId !== "")
+            return false
+        var id = selectedObjectId
+        selectedObjectId = ""
+        commit(DocumentModel.deleteObject(document, id))
+        return true
+    }
+
+    function clearSelection() {
         if (selectedObjectId === "")
             return false
-        commitRequested(DocumentModel.deleteObject(document, selectedObjectId))
         selectedObjectId = ""
-        editingObjectId = ""
         return true
+    }
+
+    // Moving focus off the active editor commits it (see TextNote).
+    function finishEditing() {
+        if (editingObjectId !== "")
+            editorPointer.forceActiveFocus()
+    }
+
+    function beginEditing(id) {
+        finishEditing()
+        selectedObjectId = id
+        editingObjectId = id
     }
 
     function cancelEditing() {
         if (editingObjectId === "")
             return false
         editingObjectId = ""
+        draftDocument = null
         return true
     }
 
-    function commitText(id, text) {
+    function commitText(id, text, height) {
         editingObjectId = ""
         selectedObjectId = ""
-        commitRequested(DocumentModel.updateText(document, id, text))
-    }
-
-    function moveText(id, x, y) {
-        commitRequested(DocumentModel.moveText(document, id, x, y))
+        var base = draftDocument || document
+        var trimmed = String(text).replace(/\s+$/, "")
+        commit(trimmed === ""
+            ? DocumentModel.deleteObject(base, id)
+            : DocumentModel.updateText(base, id, trimmed, height))
     }
 
     function eraseAt(x, y) {
-        var erasedId = Geometry.hitTest(document.objects, [x, y], 12)
-        if (erasedId === "")
-            return false
-
-        var erasedObject = null
-        for (var i = 0; i < document.objects.length; i++) {
-            if (document.objects[i].id === erasedId) {
-                erasedObject = document.objects[i]
-                break
+        var base = shownDocument
+        var next = base
+        var center = [x, y]
+        for (var i = 0; i < base.objects.length; i++) {
+            var object = base.objects[i]
+            if (object.type === "stroke") {
+                var radius = eraserRadius + Number(object.width || 1) / 2
+                if (!Geometry.strokeTouches(object.points, center, radius))
+                    continue
+                var segments = Geometry.splitStroke(object.points, center, radius)
+                next = DocumentModel.replaceStrokeSegments(next, object.id, segments)
+            } else if (object.type === "text" && Geometry.rectTouches(object, center, eraserRadius)) {
+                next = DocumentModel.deleteObject(next, object.id)
             }
         }
-        if (!erasedObject)
+        if (next === base)
             return false
-
-        if (selectedObjectId === erasedId)
+        if (selectedObjectId !== "" && !DocumentModel.findObject(next, selectedObjectId))
             selectedObjectId = ""
-        if (editingObjectId === erasedId)
-            editingObjectId = ""
-
-        if (erasedObject.type === "stroke") {
-            var radius = 12 + Number(erasedObject.width || 1) / 2
-            var segments = Geometry.splitStroke(erasedObject.points, [x, y], radius)
-            commitRequested(DocumentModel.replaceStrokeSegments(document, erasedId, segments))
-        } else {
-            commitRequested(DocumentModel.deleteObject(document, erasedId))
-        }
+        draftDocument = next
         return true
     }
 
-    onDocumentChanged: ink.requestPaint()
+    // Fast drags deliver sparse pointer events; sweep the eraser along the gap.
+    function eraseAlong(from, to) {
+        var steps = Math.max(1, Math.ceil(Geometry.pointDistance(from, to) / (eraserRadius / 2)))
+        for (var i = 1; i <= steps; i++)
+            eraseAt(from[0] + (to[0] - from[0]) * i / steps, from[1] + (to[1] - from[1]) * i / steps)
+    }
+
+    function strokePoints() {
+        return steadyStroke ? Geometry.smoothStroke(activeStroke, mouseSmoothing) : activeStroke
+    }
+
+    function isSteadyInput(mouse) {
+        if (mouse.source !== Qt.MouseEventNotSynthesized)
+            return false
+        var device = pointerKind.point ? pointerKind.point.device : null
+        return !device || device.type === PointerDevice.Mouse || device.type === PointerDevice.TouchPad
+    }
+
+    function finishGesture(x, y) {
+        if (!gestureOrigin)
+            return
+        gestureOrigin = null
+        if (currentTool === "pen" && activeStroke.length > 0) {
+            if (activeStroke.length === 1)
+                activeStroke.push([x + 0.1, y + 0.1])
+            var points = strokePoints()
+            var next = DocumentModel.addStroke(document, Geometry.simplifyStroke(points, 0.35), penWidth)
+            if (next === document)
+                clearWetInk()
+            else
+                commit(next) // the wet layer keeps the stroke until the ink layer has painted it
+        } else if (draftDocument) {
+            commit(draftDocument)
+        }
+    }
+
+    function cancelGesture() {
+        gestureOrigin = null
+        clearWetInk()
+        if (editingObjectId === "")
+            draftDocument = null
+    }
+
+    function clearWetInk() {
+        if (activeStroke.length === 0)
+            return
+        activeStroke = []
+        wet.requestPaint()
+    }
+
+    function gridLines(ctx, width, height, step, lineWidth, color) {
+        ctx.lineWidth = lineWidth
+        ctx.strokeStyle = color
+        ctx.beginPath()
+        for (var x = step; x < width; x += step) {
+            ctx.moveTo(Math.round(x) + 0.5, 0)
+            ctx.lineTo(Math.round(x) + 0.5, height)
+        }
+        for (var y = step; y < height; y += step) {
+            ctx.moveTo(0, Math.round(y) + 0.5)
+            ctx.lineTo(width, Math.round(y) + 0.5)
+        }
+        ctx.stroke()
+    }
+
+    function paintGraph(ctx, width, height) {
+        gridLines(ctx, width, height, 16, 1, Qt.rgba(minorGrid.r, minorGrid.g, minorGrid.b, 0.20))
+        gridLines(ctx, width, height, 80, 1.15, Qt.rgba(majorGrid.r, majorGrid.g, majorGrid.b, 0.31))
+    }
+
+    // A dot at every 16 px crossing, slightly stronger every 80 px.
+    function paintDots(ctx, width, height) {
+        for (var x = 16; x < width; x += 16) {
+            for (var y = 16; y < height; y += 16) {
+                var major = x % 80 === 0 && y % 80 === 0
+                ctx.fillStyle = Qt.rgba(majorGrid.r, majorGrid.g, majorGrid.b, major ? 0.62 : 0.42)
+                ctx.beginPath()
+                ctx.arc(x, y, major ? 1.5 : 1.1, 0, Math.PI * 2)
+                ctx.fill()
+            }
+        }
+    }
+
+    // Notebook ruling: lines every 24 px below the header and a red margin rule.
+    function paintRuled(ctx, width, height) {
+        ctx.lineWidth = 1
+        ctx.strokeStyle = Qt.rgba(minorGrid.r, minorGrid.g, minorGrid.b, 0.45)
+        ctx.beginPath()
+        for (var y = 46 + 24; y < height - 20; y += 24) {
+            ctx.moveTo(0, y + 0.5)
+            ctx.lineTo(width, y + 0.5)
+        }
+        ctx.stroke()
+        ctx.strokeStyle = Qt.rgba(marginRule.r, marginRule.g, marginRule.b, 0.5)
+        ctx.beginPath()
+        ctx.moveTo(64.5, 0)
+        ctx.lineTo(64.5, height)
+        ctx.stroke()
+    }
+
+    function traceStroke(ctx, points, width, color) {
+        if (!points || points.length === 0)
+            return
+        ctx.strokeStyle = color
+        ctx.fillStyle = color
+        ctx.lineWidth = width
+        ctx.lineCap = "round"
+        ctx.lineJoin = "round"
+        ctx.beginPath()
+        if (points.length === 1) {
+            ctx.arc(points[0][0], points[0][1], width / 2, 0, Math.PI * 2)
+            ctx.fill()
+            return
+        }
+        // Quadratic curves through segment midpoints smooth out pointer sampling.
+        ctx.moveTo(points[0][0], points[0][1])
+        for (var i = 1; i < points.length - 1; i++) {
+            ctx.quadraticCurveTo(points[i][0], points[i][1],
+                (points[i][0] + points[i + 1][0]) / 2, (points[i][1] + points[i + 1][1]) / 2)
+        }
+        ctx.lineTo(points[points.length - 1][0], points[points.length - 1][1])
+        ctx.stroke()
+    }
+
+    onDocumentChanged: {
+        if (editingObjectId === "")
+            draftDocument = null
+    }
+    onShownDocumentChanged: ink.requestPaint()
+    onPaperTypeChanged: graph.requestPaint()
+    onSelectedObjectIdChanged: ink.requestPaint()
+    onCurrentToolChanged: {
+        cancelGesture()
+        selectedObjectId = ""
+    }
+    onEditingObjectIdChanged: {
+        if (editingObjectId === "")
+            editingFinished()
+    }
 
     rotation: 0.8
     transformOrigin: Item.Center
+
+    // With more than one sheet, the next one peeks out from under the page.
+    Rectangle {
+        anchors.fill: parent
+        visible: root.sheetCount > 1
+        rotation: -1.5
+        radius: 3
+        color: "#cdc5b1"
+        border.width: 1
+        border.color: "#a99e87"
+    }
 
     Rectangle {
         id: sheet
@@ -89,6 +281,7 @@ Item {
         border.width: 1
         border.color: "#b8ad96"
         layer.enabled: true
+        layer.smooth: true
         layer.effect: MultiEffect {
             shadowEnabled: true
             shadowColor: "#7a000000"
@@ -111,36 +304,16 @@ Item {
                 ctx.fillStyle = root.paperColor
                 ctx.fillRect(0, 0, width, height)
 
-                var minor = 16
-                var major = 80
-                ctx.lineWidth = 1
-                ctx.strokeStyle = Qt.rgba(root.minorGrid.r, root.minorGrid.g, root.minorGrid.b, 0.20)
-                ctx.beginPath()
-                for (var x = minor; x < width; x += minor) {
-                    ctx.moveTo(Math.round(x) + 0.5, 0)
-                    ctx.lineTo(Math.round(x) + 0.5, height)
-                }
-                for (var y = minor; y < height; y += minor) {
-                    ctx.moveTo(0, Math.round(y) + 0.5)
-                    ctx.lineTo(width, Math.round(y) + 0.5)
-                }
-                ctx.stroke()
-
-                ctx.lineWidth = 1.15
-                ctx.strokeStyle = Qt.rgba(root.majorGrid.r, root.majorGrid.g, root.majorGrid.b, 0.31)
-                ctx.beginPath()
-                for (var mx = major; mx < width; mx += major) {
-                    ctx.moveTo(Math.round(mx) + 0.5, 0)
-                    ctx.lineTo(Math.round(mx) + 0.5, height)
-                }
-                for (var my = major; my < height; my += major) {
-                    ctx.moveTo(0, Math.round(my) + 0.5)
-                    ctx.lineTo(width, Math.round(my) + 0.5)
-                }
-                ctx.stroke()
+                if (root.paperType === "graph")
+                    root.paintGraph(ctx, width, height)
+                else if (root.paperType === "dots")
+                    root.paintDots(ctx, width, height)
+                else if (root.paperType === "ruled")
+                    root.paintRuled(ctx, width, height)
             }
         }
 
+        // Committed strokes: repainted only when the shown document or selection changes.
         Canvas {
             id: ink
 
@@ -148,43 +321,43 @@ Item {
             antialiasing: true
             renderStrategy: Canvas.Threaded
 
-            function drawStroke(ctx, stroke) {
-                if (!stroke.points || stroke.points.length === 0)
-                    return
-                ctx.strokeStyle = root.graphite
-                ctx.fillStyle = root.graphite
-                ctx.lineWidth = stroke.width || 2.5
-                ctx.lineCap = "round"
-                ctx.lineJoin = "round"
-                if (stroke.points.length === 1) {
-                    ctx.beginPath()
-                    ctx.arc(stroke.points[0][0], stroke.points[0][1], ctx.lineWidth / 2, 0, Math.PI * 2)
-                    ctx.fill()
-                    return
+            onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                var objects = root.shownDocument && root.shownDocument.objects ? root.shownDocument.objects : []
+                var halo = Qt.rgba(root.selectionColor.r, root.selectionColor.g, root.selectionColor.b, 0.45)
+                for (var i = 0; i < objects.length; i++) {
+                    if (objects[i].type !== "stroke")
+                        continue
+                    if (objects[i].id === root.selectedObjectId)
+                        root.traceStroke(ctx, objects[i].points, (objects[i].width || 2.5) + 7, halo)
+                    root.traceStroke(ctx, objects[i].points, objects[i].width || 2.5, root.graphite)
                 }
-                ctx.beginPath()
-                ctx.moveTo(stroke.points[0][0], stroke.points[0][1])
-                for (var i = 1; i < stroke.points.length; i++)
-                    ctx.lineTo(stroke.points[i][0], stroke.points[i][1])
-                ctx.stroke()
             }
+            onPainted: {
+                if (!editorPointer.pressed)
+                    root.clearWetInk()
+            }
+        }
+
+        // The stroke being drawn, kept separate so each pointer sample repaints only itself.
+        Canvas {
+            id: wet
+
+            anchors.fill: parent
+            antialiasing: true
 
             onPaint: {
                 var ctx = getContext("2d")
                 ctx.reset()
-                var objects = root.document && root.document.objects ? root.document.objects : []
-                for (var i = 0; i < objects.length; i++) {
-                    if (objects[i].type === "stroke")
-                        drawStroke(ctx, objects[i])
-                }
-                if (root.activeStroke.length > 0)
-                    drawStroke(ctx, { points: root.activeStroke, width: root.penWidth })
+                // Smoothed here, once per frame, rather than on every pointer event.
+                root.traceStroke(ctx, root.strokePoints(), root.penWidth, root.graphite)
             }
         }
 
         Repeater {
-            model: root.document && root.document.objects
-                ? root.document.objects.filter(function(object) { return object.type === "text" })
+            model: root.shownDocument && root.shownDocument.objects
+                ? root.shownDocument.objects.filter(function(object) { return object.type === "text" })
                 : []
 
             TextNote {
@@ -193,27 +366,22 @@ Item {
                 selected: modelData.id === root.selectedObjectId
                 editing: modelData.id === root.editingObjectId
                 selectable: root.currentTool === "select"
-                erasable: root.currentTool === "eraser"
+                editable: root.currentTool === "text"
                 onSelectedRequested: function(id) {
+                    root.finishEditing()
                     root.selectedObjectId = id
                 }
                 onEditRequested: function(id) {
-                    root.selectedObjectId = id
-                    root.editingObjectId = id
+                    root.beginEditing(id)
                 }
-                onCommitRequested: function(id, text) {
-                    root.commitText(id, text)
+                onCommitRequested: function(id, text, height) {
+                    root.commitText(id, text, height)
                 }
                 onCancelRequested: function(id) {
-                    root.editingObjectId = ""
-                }
-                onEraseRequested: function(id) {
-                    root.selectedObjectId = ""
-                    root.editingObjectId = ""
-                    root.commitRequested(DocumentModel.deleteObject(root.document, id))
+                    root.cancelEditing()
                 }
                 onMoveRequested: function(id, x, y) {
-                    root.moveText(id, x, y)
+                    root.commit(DocumentModel.moveText(root.document, id, x, y))
                 }
             }
         }
@@ -225,9 +393,9 @@ Item {
             z: 15
             acceptedButtons: Qt.LeftButton
             hoverEnabled: true
-            cursorShape: root.currentTool === "pen" ? Qt.CrossCursor
-                : root.currentTool === "eraser" ? Qt.PointingHandCursor
+            cursorShape: root.currentTool === "pen" || root.currentTool === "eraser" ? Qt.CrossCursor
                 : root.currentTool === "text" ? Qt.IBeamCursor
+                : root.gestureOrigin ? Qt.ClosedHandCursor
                 : Qt.ArrowCursor
 
             onPressed: function(mouse) {
@@ -236,54 +404,76 @@ Item {
                     mouse.accepted = true
                     return
                 }
+                root.gestureOrigin = [mouse.x, mouse.y]
                 if (root.currentTool === "pen") {
+                    root.steadyStroke = root.isSteadyInput(mouse)
                     root.activeStroke = [[mouse.x, mouse.y]]
-                    ink.requestPaint()
+                    wet.requestPaint()
                 } else if (root.currentTool === "eraser") {
                     root.eraseAt(mouse.x, mouse.y)
                 } else if (root.currentTool === "text") {
-                    var next = DocumentModel.addText(root.document, mouse.x, mouse.y, "New note")
-                    root.selectedObjectId = next.objects[next.objects.length - 1].id
-                    root.editingObjectId = root.selectedObjectId
-                    root.commitRequested(next)
+                    root.gestureOrigin = null
+                    var next = DocumentModel.addText(root.document, mouse.x - 4, mouse.y - 12, "")
+                    if (next !== root.document) {
+                        root.draftDocument = next
+                        root.beginEditing(next.objects[next.objects.length - 1].id)
+                    }
                 } else if (root.currentTool === "select") {
-                    root.selectedObjectId = Geometry.hitTest(root.document.objects, [mouse.x, mouse.y], 5)
+                    root.selectedObjectId = Geometry.hitTest(root.document.objects, [mouse.x, mouse.y], 6)
+                    if (root.selectedObjectId === "")
+                        root.gestureOrigin = null
                 }
             }
 
             onPositionChanged: function(mouse) {
-                if (!pressed)
-                    return
-                if (root.currentTool === "eraser") {
-                    root.eraseAt(mouse.x, mouse.y)
-                    return
-                }
-                if (root.currentTool !== "pen" || root.activeStroke.length === 0)
+                if (!pressed || !root.gestureOrigin)
                     return
                 var point = [mouse.x, mouse.y]
-                if (Geometry.pointDistance(root.activeStroke[root.activeStroke.length - 1], point) >= 2.5) {
-                    var nextPoints = root.activeStroke.slice()
-                    nextPoints.push(point)
-                    root.activeStroke = nextPoints
-                    ink.requestPaint()
+                if (root.currentTool === "eraser") {
+                    root.eraseAlong(root.gestureOrigin, point)
+                    root.gestureOrigin = point
+                } else if (root.currentTool === "pen") {
+                    var points = root.activeStroke
+                    if (points.length > 0 && Geometry.pointDistance(points[points.length - 1], point) >= 1.5) {
+                        points.push(point)
+                        root.activeStroke = points
+                        wet.requestPaint()
+                    }
+                } else if (root.currentTool === "select") {
+                    if (!root.draftDocument && Geometry.pointDistance(root.gestureOrigin, point) < 3)
+                        return
+                    root.draftDocument = DocumentModel.translateObject(root.document, root.selectedObjectId,
+                        mouse.x - root.gestureOrigin[0], mouse.y - root.gestureOrigin[1])
                 }
             }
 
             onReleased: function(mouse) {
-                if (root.currentTool !== "pen" || root.activeStroke.length === 0)
-                    return
-                var points = root.activeStroke
-                root.activeStroke = []
-                if (points.length === 1)
-                    points.push([mouse.x + 0.1, mouse.y + 0.1])
-                root.commitRequested(DocumentModel.addStroke(root.document, points, root.penWidth))
-                ink.requestPaint()
+                root.finishGesture(mouse.x, mouse.y)
             }
 
-            onCanceled: {
-                root.activeStroke = []
-                ink.requestPaint()
+            onCanceled: root.cancelGesture()
+
+            // Passive: only reports which kind of device pressed, before onPressed runs.
+            PointHandler {
+                id: pointerKind
+
+                target: null
             }
+        }
+
+        Rectangle {
+            id: eraserRing
+
+            z: 16
+            visible: root.currentTool === "eraser" && editorPointer.containsMouse && root.editingObjectId === ""
+            x: editorPointer.mouseX - width / 2
+            y: editorPointer.mouseY - height / 2
+            width: root.eraserRadius * 2
+            height: width
+            radius: width / 2
+            color: "#14423e38"
+            border.width: 1
+            border.color: "#a0423e38"
         }
 
         Rectangle {
@@ -313,35 +503,76 @@ Item {
                 font.letterSpacing: 2.6
                 textFormat: Text.PlainText
             }
+        }
+
+        // Above the drawing surface, so the paper type can be clicked; the rest of the row
+        // takes no input, and the header stays drawable around it.
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: 19
+            y: 23 - height / 2
+            z: 21
 
             Text {
-                anchors.right: parent.right
-                anchors.rightMargin: 25
                 anchors.verticalCenter: parent.verticalCenter
-                text: "SHEET 01  /  GRAPH 16"
+                text: "SHEET " + root.pad2(root.sheetIndex + 1) + " OF " + root.pad2(root.sheetCount) + "  /"
                 color: "#805b5349"
                 font.family: "monospace"
                 font.pixelSize: 9
                 font.letterSpacing: 1.1
                 textFormat: Text.PlainText
             }
-        }
 
-        Text {
-            anchors.left: parent.left
-            anchors.leftMargin: 27
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 15
-            text: "jobo.field-notes  •  drag the brass clip to move"
-            color: "#705b5349"
-            font.family: "monospace"
-            font.pixelSize: 8
-            font.letterSpacing: 0.7
-            textFormat: Text.PlainText
+            Item {
+                id: paperLabel
+
+                width: paperText.implicitWidth + 12
+                height: 22
+
+                Accessible.role: Accessible.Button
+                Accessible.name: "Paper: " + paperText.text + ". Change paper (G)"
+                Accessible.onPressAction: root.paperRequested()
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 4
+                    color: paperMouse.pressed ? "#1a5b5349" : "transparent"
+                    border.width: 1
+                    border.color: paperMouse.containsMouse ? "#705b5349" : "transparent"
+                }
+
+                Text {
+                    id: paperText
+
+                    anchors.centerIn: parent
+                    text: root.paperLabels[root.paperType] || "GRAPH 16"
+                    color: paperMouse.containsMouse ? root.graphite : "#805b5349"
+                    font.family: "monospace"
+                    font.pixelSize: 9
+                    font.letterSpacing: 1.1
+                    textFormat: Text.PlainText
+                }
+
+                MouseArea {
+                    id: paperMouse
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.paperRequested()
+                }
+
+                Tooltip {
+                    text: "Change paper"
+                    shortcut: "G"
+                    side: "bottom"
+                    hovered: paperMouse.containsMouse
+                }
+            }
         }
 
         Rectangle {
-            width: 68
+            width: Math.max(68, statusLabel.implicitWidth + 16)
             height: 18
             anchors.right: parent.right
             anchors.rightMargin: 24
@@ -353,8 +584,10 @@ Item {
             border.color: "#705b5349"
 
             Text {
+                id: statusLabel
+
                 anchors.centerIn: parent
-                text: "READY"
+                text: root.statusText
                 color: "#955b5349"
                 font.family: "monospace"
                 font.pixelSize: 8

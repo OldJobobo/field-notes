@@ -1,7 +1,21 @@
-function createDocument(width, height) {
+// Documents are immutable plain data: every edit returns a new document that shares
+// untouched objects with the previous one, and a no-op edit returns the same document.
+
+var MAX_OBJECTS = 4096
+var MAX_STROKE_POINTS = 8192
+var MAX_TOTAL_POINTS = 250000
+var MAX_TEXT = 4096
+var MAX_SHEETS = 32
+var TOOLS = ["select", "pen", "eraser", "text"]
+var TOOLBAR_SIDES = ["right", "left", "top", "bottom"]
+// Ruling printed on a sheet, in the order clicking the paper label cycles through them.
+var PAPERS = ["graph", "dots", "ruled", "plain"]
+
+function createDocument(width, height, paper) {
     return {
         schemaVersion: 1,
         page: { width: width, height: height },
+        paper: PAPERS.indexOf(paper) >= 0 ? paper : "graph",
         objects: [],
         ui: { tool: "pen", penWidth: 2.5 }
     }
@@ -11,119 +25,328 @@ function clamp(value, low, high) {
     return Math.max(low, Math.min(high, Number(value) || 0))
 }
 
+function round1(value) {
+    return Math.round(value * 10) / 10
+}
+
+function withObjects(document, objects) {
+    return Object.assign({}, document, { objects: objects })
+}
+
+function setPaper(document, paper) {
+    if (PAPERS.indexOf(paper) < 0 || paper === document.paper)
+        return document
+    return Object.assign({}, document, { paper: paper })
+}
+
+function nextPaper(paper) {
+    return PAPERS[(PAPERS.indexOf(paper) + 1) % PAPERS.length]
+}
+
+function indexOf(document, id) {
+    for (var i = 0; i < document.objects.length; i++) {
+        if (document.objects[i].id === id)
+            return i
+    }
+    return -1
+}
+
+function findObject(document, id) {
+    var index = indexOf(document, id)
+    return index < 0 ? null : document.objects[index]
+}
+
+function replaceAt(document, index, object) {
+    var objects = document.objects.slice()
+    objects[index] = object
+    return withObjects(document, objects)
+}
+
+function sameObjects(a, b) {
+    if (a === b)
+        return true
+    if (!a || !b || a.objects.length !== b.objects.length)
+        return false
+    for (var i = 0; i < a.objects.length; i++) {
+        if (a.objects[i] !== b.objects[i])
+            return false
+    }
+    return true
+}
+
 function nextId(document, prefix) {
     var highest = 0
+    var head = prefix + "-"
     for (var i = 0; i < document.objects.length; i++) {
-        var match = String(document.objects[i].id || "").match(new RegExp("^" + prefix + "-(\\d+)$"))
-        if (match)
-            highest = Math.max(highest, Number(match[1]))
+        var id = String(document.objects[i].id || "")
+        if (id.indexOf(head) === 0)
+            highest = Math.max(highest, Number(id.slice(head.length)) || 0)
     }
     return prefix + "-" + (highest + 1)
 }
 
+function cleanPoints(document, points) {
+    var clean = []
+    for (var i = 0; i < points.length && clean.length < MAX_STROKE_POINTS; i++) {
+        var x = Number(points[i] && points[i][0])
+        var y = Number(points[i] && points[i][1])
+        if (isFinite(x) && isFinite(y))
+            clean.push([round1(clamp(x, 0, document.page.width)), round1(clamp(y, 0, document.page.height))])
+    }
+    return clean
+}
+
 function addStroke(document, points, width) {
-    var next = JSON.parse(JSON.stringify(document))
-    var cleanPoints = []
-    for (var i = 0; i < points.length && i < 8192; i++)
-        cleanPoints.push([
-            clamp(points[i][0], 0, next.page.width),
-            clamp(points[i][1], 0, next.page.height)
-        ])
-    next.objects.push({
-        id: nextId(next, "stroke"),
+    if (document.objects.length >= MAX_OBJECTS)
+        return document
+    var clean = cleanPoints(document, points || [])
+    if (clean.length === 0)
+        return document
+    return withObjects(document, document.objects.concat([{
+        id: nextId(document, "stroke"),
         type: "stroke",
         color: "graphite",
         width: clamp(width, 1, 12),
-        points: cleanPoints
-    })
-    return next
+        points: clean
+    }]))
 }
 
 function deleteObject(document, id) {
-    var next = JSON.parse(JSON.stringify(document))
-    next.objects = next.objects.filter(function(object) { return object.id !== id })
-    return next
+    var index = indexOf(document, id)
+    if (index < 0)
+        return document
+    var objects = document.objects.slice()
+    objects.splice(index, 1)
+    return withObjects(document, objects)
 }
 
 function replaceStrokeSegments(document, id, segments) {
-    var next = JSON.parse(JSON.stringify(document))
-    var index = -1
-    for (var i = 0; i < next.objects.length; i++) {
-        if (next.objects[i].id === id && next.objects[i].type === "stroke") {
-            index = i
-            break
-        }
-    }
-    if (index < 0)
-        return next
+    var index = indexOf(document, id)
+    if (index < 0 || document.objects[index].type !== "stroke")
+        return document
 
-    var source = next.objects[index]
+    var source = document.objects[index]
+    var next = withObjects(document, document.objects.slice())
     next.objects.splice(index, 1)
     var inserted = 0
     for (var j = 0; j < segments.length; j++) {
         if (!segments[j] || segments[j].length < 2)
             continue
-        var replacement = JSON.parse(JSON.stringify(source))
-        replacement.id = inserted === 0 ? source.id : nextId(next, "stroke")
-        replacement.points = JSON.parse(JSON.stringify(segments[j]))
-        next.objects.splice(index + inserted, 0, replacement)
+        next.objects.splice(index + inserted, 0, {
+            id: inserted === 0 ? source.id : nextId(next, "stroke"),
+            type: "stroke",
+            color: source.color,
+            width: source.width,
+            points: cleanPoints(document, segments[j])
+        })
         inserted++
     }
     return next
 }
 
 function clearDocument(document) {
-    var next = JSON.parse(JSON.stringify(document))
-    next.objects = []
-    return next
+    return document.objects.length === 0 ? document : withObjects(document, [])
 }
 
 function addText(document, x, y, text) {
-    var next = JSON.parse(JSON.stringify(document))
+    if (document.objects.length >= MAX_OBJECTS)
+        return document
     var width = 220
     var height = 40
-    next.objects.push({
-        id: nextId(next, "text"),
+    return withObjects(document, document.objects.concat([{
+        id: nextId(document, "text"),
         type: "text",
-        x: clamp(x, 0, Math.max(0, next.page.width - width)),
-        y: clamp(y, 0, Math.max(0, next.page.height - height)),
+        x: clamp(x, 0, Math.max(0, document.page.width - width)),
+        y: clamp(y, 0, Math.max(0, document.page.height - height)),
         width: width,
         height: height,
-        text: String(text || "").slice(0, 4096),
+        text: String(text || "").slice(0, MAX_TEXT),
         size: 16
-    })
-    return next
+    }]))
 }
 
-function updateText(document, id, text) {
-    var next = JSON.parse(JSON.stringify(document))
-    for (var i = 0; i < next.objects.length; i++) {
-        if (next.objects[i].id === id && next.objects[i].type === "text")
-            next.objects[i].text = String(text || "").slice(0, 4096)
-    }
-    return next
+function updateText(document, id, text, height) {
+    var index = indexOf(document, id)
+    if (index < 0 || document.objects[index].type !== "text")
+        return document
+    var source = document.objects[index]
+    var nextText = String(text || "").slice(0, MAX_TEXT)
+    var nextHeight = height === undefined ? source.height : Math.round(clamp(height, 20, document.page.height))
+    if (nextText === source.text && nextHeight === source.height)
+        return document
+    var object = Object.assign({}, source, { text: nextText, height: nextHeight })
+    object.y = clamp(object.y, 0, Math.max(0, document.page.height - nextHeight))
+    return replaceAt(document, index, object)
 }
 
 function moveText(document, id, x, y) {
-    var next = JSON.parse(JSON.stringify(document))
-    for (var i = 0; i < next.objects.length; i++) {
-        var object = next.objects[i]
-        if (object.id === id && object.type === "text") {
-            object.x = clamp(x, 0, Math.max(0, next.page.width - object.width))
-            object.y = clamp(y, 0, Math.max(0, next.page.height - object.height))
-        }
+    var index = indexOf(document, id)
+    if (index < 0 || document.objects[index].type !== "text")
+        return document
+    var source = document.objects[index]
+    var nextX = clamp(x, 0, Math.max(0, document.page.width - source.width))
+    var nextY = clamp(y, 0, Math.max(0, document.page.height - source.height))
+    if (nextX === source.x && nextY === source.y)
+        return document
+    return replaceAt(document, index, Object.assign({}, source, { x: nextX, y: nextY }))
+}
+
+// Moves a stroke or note by an offset, limited so the whole object stays on the page
+// without distorting its shape.
+function translateObject(document, id, dx, dy) {
+    var index = indexOf(document, id)
+    if (index < 0)
+        return document
+    var source = document.objects[index]
+    if (source.type === "text")
+        return moveText(document, id, source.x + Number(dx), source.y + Number(dy))
+    if (source.type !== "stroke" || source.points.length === 0)
+        return document
+
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (var i = 0; i < source.points.length; i++) {
+        minX = Math.min(minX, source.points[i][0])
+        maxX = Math.max(maxX, source.points[i][0])
+        minY = Math.min(minY, source.points[i][1])
+        maxY = Math.max(maxY, source.points[i][1])
     }
-    return next
+    var offsetX = round1(clamp(dx, -minX, document.page.width - maxX))
+    var offsetY = round1(clamp(dy, -minY, document.page.height - maxY))
+    if (offsetX === 0 && offsetY === 0)
+        return document
+    var points = source.points.map(function(point) {
+        return [round1(point[0] + offsetX), round1(point[1] + offsetY)]
+    })
+    return replaceAt(document, index, Object.assign({}, source, { points: points }))
+}
+
+function sanitizeObjects(rawObjects, document, budget) {
+    var objects = []
+    var seen = {}
+    var width = document.page.width
+    var height = document.page.height
+    for (var i = 0; i < rawObjects.length && objects.length < MAX_OBJECTS; i++) {
+        var source = rawObjects[i]
+        if (!source || typeof source !== "object")
+            continue
+        var id = String(source.id || "")
+        var object = null
+        if (source.type === "stroke" && Array.isArray(source.points)) {
+            var points = cleanPoints(document, source.points.slice(0, budget.points))
+            if (points.length === 0)
+                continue
+            budget.points -= points.length
+            object = { id: id, type: "stroke", color: "graphite", width: clamp(source.width, 1, 12), points: points }
+        } else if (source.type === "text" && typeof source.text === "string" && source.text.trim() !== "") {
+            var noteWidth = Math.round(clamp(source.width || 220, 40, width))
+            var noteHeight = Math.round(clamp(source.height || 40, 20, height))
+            object = {
+                id: id,
+                type: "text",
+                x: clamp(source.x, 0, width - noteWidth),
+                y: clamp(source.y, 0, height - noteHeight),
+                width: noteWidth,
+                height: noteHeight,
+                text: source.text.slice(0, MAX_TEXT),
+                size: clamp(source.size || 16, 8, 48)
+            }
+        }
+        if (!object)
+            continue
+        if (!/^(stroke|text)-\d+$/.test(id) || id.indexOf(object.type) !== 0 || seen[id])
+            object.id = ""
+        else
+            seen[id] = true
+        objects.push(object)
+    }
+
+    for (var j = 0; j < objects.length; j++) {
+        if (objects[j].id === "")
+            objects[j].id = nextId({ objects: objects }, objects[j].type)
+    }
+    return withObjects(document, objects)
+}
+
+function sanitizeUi(raw) {
+    var ui = { tool: "pen", penWidth: 2.5, toolbar: "right" }
+    if (!raw || typeof raw !== "object")
+        return ui
+    if (TOOLS.indexOf(raw.tool) >= 0)
+        ui.tool = raw.tool
+    if (TOOLBAR_SIDES.indexOf(raw.toolbar) >= 0)
+        ui.toolbar = raw.toolbar
+    if (isFinite(Number(raw.penWidth)) && raw.penWidth !== null)
+        ui.penWidth = clamp(raw.penWidth, 1, 12)
+    if (isFinite(Number(raw.boardX)) && isFinite(Number(raw.boardY)) && raw.boardX !== null && raw.boardY !== null) {
+        ui.boardX = Number(raw.boardX)
+        ui.boardY = Number(raw.boardY)
+    }
+    return ui
+}
+
+// Accepts untrusted saved JSON (a single-sheet version 1 file or a version 2 notebook) and
+// returns { documents, current, ui } with every sheet bounded and valid, or null when the
+// data is not a Field Notes file at all. Blank sheets are kept only if they are open.
+function sanitizeNotebook(raw, width, height) {
+    if (!raw || typeof raw !== "object")
+        return null
+    var rawSheets = null
+    var current = 0
+    if (raw.schemaVersion === 1 && Array.isArray(raw.objects)) {
+        rawSheets = [raw]
+    } else if (raw.schemaVersion === 2 && Array.isArray(raw.sheets)) {
+        rawSheets = raw.sheets
+        current = Math.floor(Number(raw.current)) || 0
+    } else {
+        return null
+    }
+
+    var documents = []
+    var open = 0
+    var budget = { points: MAX_TOTAL_POINTS }
+    for (var i = 0; i < rawSheets.length && documents.length < MAX_SHEETS; i++) {
+        var sheet = rawSheets[i]
+        if (!sheet || typeof sheet !== "object" || !Array.isArray(sheet.objects))
+            continue
+        var document = sanitizeObjects(sheet.objects, createDocument(width, height, sheet.paper), budget)
+        if (document.objects.length === 0 && i !== current)
+            continue
+        if (i === current)
+            open = documents.length
+        documents.push(document)
+    }
+    if (documents.length === 0)
+        documents.push(createDocument(width, height))
+    return { documents: documents, current: open, ui: sanitizeUi(raw.ui) }
+}
+
+function serialize(documents, current, ui) {
+    return JSON.stringify({
+        schemaVersion: 2,
+        page: documents[0].page,
+        current: current,
+        sheets: documents.map(function(document) { return { paper: document.paper, objects: document.objects } }),
+        ui: ui
+    })
 }
 
 if (typeof module !== "undefined")
     module.exports = {
+        MAX_SHEETS: MAX_SHEETS,
+        PAPERS: PAPERS,
         createDocument: createDocument,
+        setPaper: setPaper,
+        nextPaper: nextPaper,
+        findObject: findObject,
+        sameObjects: sameObjects,
         addStroke: addStroke,
         deleteObject: deleteObject,
         replaceStrokeSegments: replaceStrokeSegments,
         clearDocument: clearDocument,
         addText: addText,
         updateText: updateText,
-        moveText: moveText
+        moveText: moveText,
+        translateObject: translateObject,
+        sanitizeNotebook: sanitizeNotebook,
+        serialize: serialize
     }

@@ -10,12 +10,45 @@ Item {
     property bool hasContent: false
     property bool clearArmed: false
     property real penWidth: 2.5
+    property int sheetIndex: 0
+    property int sheetCount: 1
+    property bool canAddSheet: true
+    // Paper side the toolbar is docked to; top and bottom lay it out horizontally.
+    property string side: "right"
+    readonly property bool horizontal: side === "top" || side === "bottom"
+    // Tooltips open toward the paper, where the board always has room for them.
+    readonly property string tooltipSide: side === "right" ? "left"
+        : side === "left" ? "right"
+        : side === "top" ? "bottom" : "top"
+    readonly property bool lastSheet: sheetIndex >= sheetCount - 1
+    readonly property var penWidths: [1.5, 2.5, 4, 7]
     signal toolSelected(string tool)
     signal undoRequested()
     signal redoRequested()
     signal clearRequested()
     signal penWidthRequested(real width)
+    signal sheetRequested(int index)
+    signal newSheetRequested()
     signal closeRequested()
+    // Grip drag in scene coordinates; the panel decides where the toolbar docks.
+    signal gripMoved(real sceneX, real sceneY)
+    signal gripReleased()
+
+    function nextPenWidth() {
+        for (var i = 0; i < penWidths.length; i++) {
+            if (penWidths[i] > penWidth + 0.01)
+                return penWidths[i]
+        }
+        return penWidths[0]
+    }
+
+    implicitWidth: grid.implicitWidth + 8
+    implicitHeight: grid.implicitHeight + 8
+
+    onHasContentChanged: {
+        if (!hasContent)
+            clearArmed = false
+    }
 
     Timer {
         id: clearTimer
@@ -23,139 +56,210 @@ Item {
         onTriggered: root.clearArmed = false
     }
 
+    // Background only: the shadow layer would clip button tooltips drawn outside it.
     Rectangle {
-        id: island
-
         anchors.fill: parent
-        radius: 18
-        color: "#ed2b2925"
+        radius: 13
+        color: "#f02b2925"
         border.width: 1
-        border.color: "#806f695d"
+        border.color: "#5a6f695d"
         layer.enabled: true
         layer.effect: MultiEffect {
             shadowEnabled: true
-            shadowColor: "#72000000"
-            shadowBlur: 0.68
-            shadowHorizontalOffset: 4
-            shadowVerticalOffset: 10
+            shadowColor: "#66000000"
+            shadowBlur: 0.6
+            shadowHorizontalOffset: 3
+            shadowVerticalOffset: 8
             autoPaddingEnabled: true
         }
+    }
 
-        Column {
-            anchors.fill: parent
-            anchors.margins: 9
-            spacing: 2
+    // Every cell has the same size along the toolbar in both orientations, so the
+    // toolbar's length does not change when it is docked to another side.
+    component Divider: Item {
+        width: root.horizontal ? 9 : 40
+        height: root.horizontal ? 40 : 9
 
-            Item {
-                width: parent.width
-                height: 22
+        Rectangle {
+            anchors.centerIn: parent
+            width: root.horizontal ? 1 : 18
+            height: root.horizontal ? 18 : 1
+            color: "#4a6f695d"
+        }
+    }
 
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 3
-                    Repeater {
-                        model: 3
-                        Rectangle {
-                            width: 4
-                            height: 4
-                            radius: 2
-                            color: "#746f6557"
-                        }
-                    }
+    component Button: ToolButton {
+        tooltipSide: root.tooltipSide
+    }
+
+    Grid {
+        id: grid
+
+        anchors.centerIn: parent
+        // One row when horizontal, one column when vertical.
+        columns: root.horizontal ? children.length : 1
+        spacing: 2
+        horizontalItemAlignment: Grid.AlignHCenter
+        verticalItemAlignment: Grid.AlignVCenter
+
+        Item {
+            id: grip
+
+            width: root.horizontal ? 16 : 40
+            height: root.horizontal ? 40 : 16
+
+            Accessible.role: Accessible.Grip
+            Accessible.name: "Drag to dock the toolbar"
+
+            Repeater {
+                model: 2
+
+                Rectangle {
+                    required property int index
+                    x: root.horizontal ? (grip.width - 5) / 2 + index * 4 : (grip.width - 16) / 2
+                    y: root.horizontal ? (grip.height - 16) / 2 : (grip.height - 5) / 2 + index * 4
+                    width: root.horizontal ? 1 : 16
+                    height: root.horizontal ? 16 : 1
+                    color: gripHover.hovered || gripDrag.active ? "#c9c2b0" : "#6f695d"
                 }
             }
 
-            ToolButton {
-                width: parent.width
-                text: "SELECT"
-                glyph: "◇"
-                selected: root.currentTool === "select"
-                onActivated: {
-                    root.currentTool = "select"
-                    root.toolSelected("select")
-                }
-            }
-            ToolButton {
-                width: parent.width
-                text: "PEN"
-                glyph: "╱"
-                selected: root.currentTool === "pen"
-                onActivated: {
-                    root.currentTool = "pen"
-                    root.toolSelected("pen")
-                }
-            }
-            ToolButton {
-                width: parent.width
-                text: "ERASE"
-                glyph: "▱"
-                selected: root.currentTool === "eraser"
-                onActivated: {
-                    root.currentTool = "eraser"
-                    root.toolSelected("eraser")
-                }
-            }
-            ToolButton {
-                width: parent.width
-                text: "TEXT"
-                glyph: "T"
-                selected: root.currentTool === "text"
-                onActivated: {
-                    root.currentTool = "text"
-                    root.toolSelected("text")
-                }
+            HoverHandler {
+                id: gripHover
+
+                cursorShape: Qt.OpenHandCursor
             }
 
-            Rectangle {
-                width: parent.width
-                height: 1
-                color: "#4f6f695d"
-            }
+            DragHandler {
+                id: gripDrag
 
-            ToolButton {
-                width: parent.width
-                text: "UNDO"
-                glyph: "↶"
-                enabled: root.canUndo
-                onActivated: root.undoRequested()
-            }
-            ToolButton {
-                width: parent.width
-                text: "REDO"
-                glyph: "↷"
-                enabled: root.canRedo
-                onActivated: root.redoRequested()
-            }
-
-            Rectangle {
-                width: parent.width
-                height: 1
-                color: "#4f6f695d"
-            }
-
-            ToolButton {
-                width: parent.width
-                text: root.clearArmed ? "AGAIN" : "CLEAR"
-                glyph: root.clearArmed ? "!" : "×"
-                dangerous: true
-                enabled: root.hasContent
-                onActivated: {
-                    if (root.clearArmed) {
-                        root.clearArmed = false
-                        clearTimer.stop()
-                        root.clearRequested()
-                    } else {
-                        root.clearArmed = true
-                        clearTimer.restart()
-                    }
+                target: null
+                cursorShape: Qt.ClosedHandCursor
+                onCentroidChanged: {
+                    if (active)
+                        root.gripMoved(centroid.scenePosition.x, centroid.scenePosition.y)
+                }
+                onActiveChanged: {
+                    if (!active)
+                        root.gripReleased()
                 }
             }
-            ToolButton {
-                width: parent.width
-                text: "CLOSE"
-                glyph: "—"
-                onActivated: root.closeRequested()
+        }
+
+        Button {
+            text: "Select"
+            icon: "󰆿"
+            shortcut: "V"
+            selected: root.currentTool === "select"
+            onActivated: root.toolSelected("select")
+        }
+        Button {
+            text: "Pen"
+            icon: "󰲶"
+            shortcut: "P"
+            selected: root.currentTool === "pen"
+            onActivated: root.toolSelected("pen")
+        }
+        Button {
+            text: "Erase"
+            icon: "󰇾"
+            shortcut: "E"
+            selected: root.currentTool === "eraser"
+            onActivated: root.toolSelected("eraser")
+        }
+        Button {
+            text: "Text"
+            icon: "󰊄"
+            shortcut: "T"
+            selected: root.currentTool === "text"
+            onActivated: root.toolSelected("text")
+        }
+
+        Divider {}
+
+        Button {
+            text: "Undo"
+            icon: "󰕌"
+            shortcut: "Ctrl+Z"
+            enabled: root.canUndo
+            onActivated: root.undoRequested()
+        }
+        Button {
+            text: "Redo"
+            icon: "󰑎"
+            shortcut: "Ctrl+Y"
+            enabled: root.canRedo
+            onActivated: root.redoRequested()
+        }
+
+        Divider {}
+
+        Button {
+            text: "Previous sheet"
+            icon: "󰅁"
+            shortcut: "PgUp"
+            enabled: root.sheetIndex > 0
+            onActivated: root.sheetRequested(root.sheetIndex - 1)
+        }
+        Item {
+            width: root.horizontal ? 34 : 40
+            height: root.horizontal ? 40 : 34
+
+            Text {
+                anchors.centerIn: parent
+                text: (root.sheetIndex + 1) + "/" + root.sheetCount
+                color: "#a9a291"
+                font.family: "monospace"
+                font.pixelSize: 10
+                font.bold: true
+                textFormat: Text.PlainText
             }
+        }
+        // On the last sheet, "next" becomes "new sheet".
+        Button {
+            text: root.lastSheet ? "New sheet" : "Next sheet"
+            icon: root.lastSheet ? "󰐕" : "󰅂"
+            shortcut: root.lastSheet ? "N" : "PgDn"
+            enabled: !root.lastSheet || root.canAddSheet
+            onActivated: {
+                if (root.lastSheet)
+                    root.newSheetRequested()
+                else
+                    root.sheetRequested(root.sheetIndex + 1)
+            }
+        }
+
+        Divider {}
+
+        Button {
+            text: "Width " + root.penWidth.toFixed(1)
+            dotSize: Math.min(16, 3 + root.penWidth * 1.3)
+            shortcut: "[ ]"
+            onActivated: root.penWidthRequested(root.nextPenWidth())
+        }
+        Button {
+            text: root.clearArmed ? "Click again to clear" : "Clear sheet"
+            icon: "󰧧"
+            dangerous: true
+            selected: root.clearArmed
+            forceTooltip: root.clearArmed
+            enabled: root.hasContent
+            onActivated: {
+                if (root.clearArmed) {
+                    root.clearArmed = false
+                    clearTimer.stop()
+                    root.clearRequested()
+                } else {
+                    root.clearArmed = true
+                    clearTimer.restart()
+                }
+            }
+        }
+        Button {
+            text: "Close"
+            icon: "󰅖"
+            shortcut: "Esc"
+            onActivated: root.closeRequested()
         }
     }
 }
