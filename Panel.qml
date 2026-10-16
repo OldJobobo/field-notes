@@ -30,6 +30,9 @@ Item {
     // Nothing is written until the saved sheet has been read, so a slow or failed load
     // can never overwrite it with an empty page.
     property bool stateReady: false
+    // The notes file is only opened once stateCheck has confirmed it is safe to read.
+    property bool stateChecked: false
+    readonly property int maxStateBytes: 16 * 1024 * 1024
     property string saveStatus: "LOADING"
     readonly property string home: Quickshell.env("HOME")
     readonly property string defaultExportDir: (Quickshell.env("XDG_PICTURES_DIR") || home + "/Pictures") + "/field-notes"
@@ -405,6 +408,36 @@ Item {
         id: prepareStateDir
 
         command: ["mkdir", "-p", "-m", "700", root.stateDir]
+        onExited: function(exitCode) {
+            if (exitCode === 0) {
+                stateCheck.running = true
+            } else {
+                console.warn("Field Notes: cannot create " + root.stateDir + "; notes will not be saved")
+                root.saveStatus = "NOT SAVED"
+            }
+        }
+    }
+
+    // Reads of the notes file fail closed: only a regular file (not a symlink, pipe or
+    // folder) of at most maxStateBytes is opened. Otherwise nothing is read and nothing is
+    // ever written over it. Exit codes: 0 safe, 3 missing (start fresh), 4 not a regular
+    // file, 5 unreadable, 6 too large.
+    Process {
+        id: stateCheck
+
+        command: ["sh", "-c",
+            "if [ -L \"$1\" ]; then exit 4; fi; [ -e \"$1\" ] || exit 3; [ -f \"$1\" ] || exit 4; size=$(stat -c %s -- \"$1\") || exit 5; [ \"$size\" -le \"$2\" ] || exit 6",
+            "field-notes", root.stateDir + "/notes.json", String(root.maxStateBytes)]
+        onExited: function(exitCode) {
+            if (exitCode === 0 || exitCode === 3) {
+                root.stateChecked = true
+                return
+            }
+            var reasons = { 4: "is not a regular file", 5: "cannot be read", 6: "is larger than 16 MiB" }
+            console.warn("Field Notes: " + root.stateDir + "/notes.json " + (reasons[exitCode] || "failed its safety check")
+                + "; it was not opened and notes will not be saved over it")
+            root.saveStatus = "NOT SAVED"
+        }
     }
 
     Process {
@@ -453,13 +486,14 @@ Item {
     Process {
         id: backupCorrupt
 
-        command: ["cp", "-f", "--", stateFile.path, stateFile.path + ".corrupt"]
+        // Never follows symlinks: replaces any existing backup rather than writing through it.
+        command: ["cp", "--no-dereference", "--remove-destination", "--", stateFile.path, stateFile.path + ".corrupt"]
     }
 
     FileView {
         id: stateFile
 
-        path: root.stateDir + "/notes.json"
+        path: root.stateChecked ? root.stateDir + "/notes.json" : ""
         atomicWrites: true
         blockWrites: true
         printErrors: false

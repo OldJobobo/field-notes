@@ -110,6 +110,14 @@ always passed as arguments, never spliced into a shell command.
 - Nothing is written until the existing file has been read (`stateReady`), so a slow or
   failed load can never overwrite notes with an empty page. Writes are atomic. A file that
   is not a Field Notes file at all is copied to `notes.json.corrupt` first.
+- Reads fail closed. Before the file is opened, a check (`stateCheck` in `Panel.qml`) requires a
+  regular file of at most 16 MiB: a symlink, pipe, folder or oversized file is never read,
+  nothing is written over it, and the status shows `NOT SAVED` with the reason in the shell
+  log. The check runs just before the read, so a same-user process could still swap the file
+  in between; anything with that access can already change the user's files.
+- The `.corrupt` backup is copied without following symlinks and replaces any existing
+  backup instead of writing through it. `tests/state-safety.test.js` runs both commands
+  against real files.
 
 ## Testing
 

@@ -219,8 +219,10 @@ sent anywhere:
 **Nothing is copied.** Copying needs `wl-copy` (from `wl-clipboard`). If an image paste
 does nothing, the app you're pasting into may not accept images — paste the path instead.
 
-**The status says `NOT SAVED`.** Field Notes can't write to its notes folder. Check that
-`~/.local/state/field-notes/` exists and is yours.
+**The status says `NOT SAVED`.** Field Notes can't safely use its notes file. Check that
+`~/.local/state/field-notes/` exists and is yours, and that `notes.json` is a plain file under
+16 MiB, not a link. For safety, Field Notes won't read or overwrite anything else; the shell log
+(`journalctl --user -t omarchy-shell`) says which check failed.
 
 **My tablet strokes look smoothed.** Your tablet is reporting itself as a mouse. Set
 **Mouse smoothing** to **Off** in settings.
