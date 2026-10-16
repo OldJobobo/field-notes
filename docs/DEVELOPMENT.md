@@ -154,9 +154,10 @@ A harness is a small `Window` that instantiates the component and saves
 
 ### Trying changes live
 
-Link your checkout into the plugin folder once:
+Clone the repository and link it into the plugin folder once:
 
 ```sh
+git clone https://github.com/OldJobobo/field-notes.git ~/Projects/field-notes
 ln -s ~/Projects/field-notes ~/.config/omarchy/plugins/jobo.field-notes
 omarchy-shell shell rescanPlugins
 omarchy plugin enable jobo.field-notes

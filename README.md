@@ -1,5 +1,7 @@
 # Field Notes
 
+![Field Notes on an Omarchy desktop: a sheet of graph paper with sketches and typed notes, held by a binder clip, with the toolbar docked below](preview.png)
+
 A sheet of paper that floats above your Omarchy desktop. Sketch with the mouse or a pen
 tablet, type notes, keep several sheets, and copy any sheet as an image with one key —
 ready to paste into a chat, an issue or an AI agent.
@@ -36,16 +38,7 @@ To open it from the keyboard, add a binding to `~/.config/hypr/bindings.lua`:
 o.bind("SUPER + SHIFT + N", "Field Notes", { panel = "jobo.field-notes" })
 ```
 
-<details>
-<summary>Installing from a local checkout</summary>
-
-```sh
-git clone https://github.com/OldJobobo/field-notes.git ~/.config/omarchy/plugins/jobo.field-notes
-omarchy-shell shell rescanPlugins
-omarchy plugin enable jobo.field-notes
-```
-
-</details>
+To work on Field Notes from a local checkout, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#trying-changes-live).
 
 ## Getting started
 
