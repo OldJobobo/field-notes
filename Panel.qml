@@ -228,9 +228,16 @@ Item {
             openSettings()
     }
 
+    // Opens the export folder in the file manager. Launched detached through a login shell,
+    // as Omarchy's own Util.execArgv does, so the file manager is not tied to the shell and
+    // gets the full session environment; the folder is only ever an argument. Prefers gio,
+    // which reads desktop entries correctly: outside a full desktop environment xdg-open
+    // keeps the quotes of a quoted Exec program path, and the folder never opens.
     function openExportFolder() {
-        openFolder.command = ["sh", "-c", "mkdir -p -- \"$1\" && exec xdg-open \"$1\"", "field-notes", exportDir]
-        openFolder.running = true
+        console.info("Field Notes: opening export folder " + exportDir)
+        Quickshell.execDetached(["bash", "-lc", "exec \"$@\"", "bash", "sh", "-c",
+            "mkdir -p -- \"$1\" || exit 1; command -v gio >/dev/null && exec gio open \"$1\"; exec xdg-open \"$1\"",
+            "field-notes", exportDir])
     }
 
     function setPenWidth(width) {
@@ -420,10 +427,6 @@ Item {
                 copyPath.running = true
             })
         }
-    }
-
-    Process {
-        id: openFolder
     }
 
     Process {

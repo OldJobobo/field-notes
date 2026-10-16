@@ -437,3 +437,14 @@ test("the README documents every keyboard shortcut the panel handles", () => {
   assert.ok(fs.existsSync(path.join(root, "docs/DEVELOPMENT.md")), "the README links to the developer guide")
   assert.equal((readme.match(/```/g) || []).length % 2, 0, "README code fences are balanced")
 })
+
+test("Open folder launches the file manager detached, like Omarchy, preferring gio", () => {
+  const panel = read("Panel.qml")
+  const open = panel.slice(panel.indexOf("function openExportFolder()"))
+  assert.match(open, /Quickshell\.execDetached\(\["bash", "-lc", "exec \\"\$@\\"", "bash", "sh", "-c",/,
+    "an attached Process ties the file manager to the shell; Omarchy launches GUI apps detached through a login shell")
+  assert.match(open, /command -v gio >\/dev\/null && exec gio open \\"\$1\\"; exec xdg-open \\"\$1\\""/,
+    "xdg-open alone fails on handlers whose Exec quotes the program path")
+  assert.match(open, /"field-notes", exportDir\]\)/, "the folder is an argument, never part of the command string")
+  assert.doesNotMatch(panel, /id: openFolder/)
+})

@@ -17,7 +17,7 @@ ready to paste into a chat, an issue or an AI agent.
 ## Requirements
 
 - Omarchy with the Quattro shell (`omarchy-shell`)
-- `wl-clipboard` for copying, and `xdg-utils` for **Open** in settings — both ship with Omarchy
+- `wl-clipboard` for copying, and GLib's `gio` (or `xdg-utils`) for **Open** in settings — all ship with Omarchy
 - A Nerd Font for the toolbar icons — Omarchy ships JetBrainsMono Nerd Font
 
 ## Install
@@ -227,6 +227,9 @@ does nothing, the app you're pasting into may not accept images — paste the pa
 
 **A sheet won't get smaller.** Something on it reaches past the smaller size. Move or erase
 it first.
+
+**Open in settings does nothing.** Field Notes opens the folder with your default file manager
+(`xdg-mime query default inode/directory`). Check that app opens folders on its own.
 
 **A sheet disappeared.** Sheets with nothing drawn, written or named on them are removed when
 you switch away. Give a sheet a title to keep it while it's empty.
