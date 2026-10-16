@@ -142,8 +142,13 @@ settings.
 - **Dock the toolbar** — drag its grip toward any side of the paper; it snaps there as you
   drag and lies flat along the top and bottom. Or pick a side in settings.
 
-Field Notes remembers where you left the board and toolbar. On small screens the whole
-board scales down to fit.
+- **More than one monitor** — the notes open on the monitor you're using: the one whose bar
+  icon you click, or the focused one for your keybinding. Click the icon on another monitor's
+  bar to bring open notes over. If a monitor is unplugged under them, they move to the
+  focused one.
+
+Field Notes remembers where you left the board on each monitor, and where you docked the
+toolbar. On small screens the whole board scales down to fit.
 
 ## Settings
 
@@ -203,8 +208,9 @@ omarchy-shell jobo.field-notes copy path        # prints the PNG's path
 
 | Method | What it does |
 | --- | --- |
-| `status` | The open sheet as JSON: number, title, paper, size, tool, save status, the last export, and the sheet's `corners` on screen |
-| `open` / `close` / `toggle` | Show or put away the notes |
+| `status` | The open sheet as JSON: number, title, paper, size, tool, save status, the last export, the monitor it is on (`screen`, with all of them in `screens`), and the sheet's `corners` on screen |
+| `open` / `close` / `toggle` | Show or put away the notes (on the focused monitor) |
+| `openOn <output>` | Show the notes on a monitor by name, such as `DP-1`; `status` lists them in `screens` |
 | `newSheet` / `selectSheet <n>` | Add a sheet after the last, or open sheet `n` (counted from 1) |
 | `setTitle <text>` / `setPaper <graph\|dots\|ruled\|plain>` / `setSize <small\|medium\|large>` | Change the open sheet |
 | `setTool <select\|pen\|eraser\|text>` / `setPenWidth <1–12>` | Pick a tool and pen width |

@@ -386,6 +386,33 @@ function sanitizeSettings(raw) {
     return settings
 }
 
+// Where the board was left on each screen, keyed by output name ("DP-1"), in that screen's
+// pixels. Names must look like output names, which also keeps "__proto__" out.
+var MAX_SCREENS = 16
+var SCREEN_NAME = /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/
+
+function sanitizeBoards(raw) {
+    var boards = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+        return boards
+    var names = Object.keys(raw)
+    var count = 0
+    for (var i = 0; i < names.length && count < MAX_SCREENS; i++) {
+        var position = raw[names[i]]
+        if (!SCREEN_NAME.test(names[i]) || !position || typeof position !== "object")
+            continue
+        if (position.x === null || position.y === null || !isFinite(Number(position.x)) || !isFinite(Number(position.y)))
+            continue
+        boards[names[i]] = { x: Math.round(Number(position.x)), y: Math.round(Number(position.y)) }
+        count++
+    }
+    return boards
+}
+
+function isScreenName(name) {
+    return typeof name === "string" && SCREEN_NAME.test(name)
+}
+
 function sanitizeUi(raw) {
     var ui = { tool: "pen", penWidth: 2.5, toolbar: "right" }
     if (!raw || typeof raw !== "object")
@@ -400,6 +427,9 @@ function sanitizeUi(raw) {
         ui.boardX = Number(raw.boardX)
         ui.boardY = Number(raw.boardY)
     }
+    var boards = sanitizeBoards(raw.boards)
+    if (Object.keys(boards).length > 0)
+        ui.boards = boards
     return ui
 }
 
@@ -464,6 +494,9 @@ if (typeof module !== "undefined")
         SETTING_CHOICES: SETTING_CHOICES,
         defaultSettings: defaultSettings,
         sanitizeSettings: sanitizeSettings,
+        sanitizeBoards: sanitizeBoards,
+        isScreenName: isScreenName,
+        MAX_SCREENS: MAX_SCREENS,
         SIZE_ORDER: SIZE_ORDER,
         createSheet: createSheet,
         sizeName: sizeName,

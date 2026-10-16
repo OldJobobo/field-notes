@@ -44,7 +44,7 @@ test("entry points expose a movable frameless layer-shell lifecycle", () => {
   assert.match(panel, /WlrLayershell\.layer:\s*WlrLayer\.(Top|Overlay)/)
   assert.match(panel, /exclusionMode:\s*ExclusionMode\.Ignore/)
   assert.doesNotMatch(panel, /startSystemMove\s*\(/, "layer surfaces move their scene, not a compositor window")
-  assert.match(widget, /shell toggle jobo\.field-notes/)
+  assert.match(widget, /shell summon jobo\.field-notes/, "the CLI fallback summons the panel")
   assert.match(widget, /BarIconButton\s*\{/)
   assert.match(widget, /fontFamily:\s*"JetBrainsMono Nerd Font"/, "the icon must use the installed Nerd Font rather than the text-only bar font")
   assert.doesNotMatch(widget, /labelVisible:\s*false/, "the bar glyph must actually be rendered")
@@ -402,10 +402,31 @@ test("a settings panel opens from the toolbar or Ctrl+, and every setting does s
 test("right-clicking the bar icon opens Field Notes at its settings", () => {
   const widget = read("BarWidget.qml")
   const panel = read("Panel.qml")
-  assert.match(widget, /mouseButton === Qt\.RightButton\)\s*root\.bar\.run\("omarchy-shell shell summon jobo\.field-notes '\{\\"settings\\":true\}'"\)/,
-    "summon, not toggle, so a right-click never closes an open panel")
+  assert.match(widget, /mouseButton === Qt\.RightButton\)\s*root\.summon\(\{ settings: true \}\)/,
+    "summon without toggle, so a right-click never closes an open panel")
   assert.match(panel, /function open\(payloadJson\) \{[\s\S]*?JSON\.parse\(payloadJson \|\| "\{\}"\)[\s\S]*?catch[\s\S]*?payload\.settings === true\)\s*root\.openSettings\(\)/,
     "a malformed payload must not stop the panel from opening")
+})
+
+test("the notes open on the monitor you are using and remember a place on each", () => {
+  const panel = read("Panel.qml")
+  const widget = read("BarWidget.qml")
+  assert.match(panel, /import Quickshell\.Hyprland/)
+  assert.match(panel, /screen: root\.targetScreen/, "the window follows the chosen screen, not the first one")
+  assert.doesNotMatch(panel, /Quickshell\.screens\[0\]\s*:\s*null\n\s*visible/, "no fixed first-screen window")
+  assert.match(panel, /Hyprland\.focusedMonitor/, "keyboard and IPC opens use the focused monitor")
+  assert.match(panel, /var screen = \(DocumentModel\.isScreenName\(payload\.screen\) \? screenNamed\(payload\.screen\) : null\) \|\| focusedScreen\(\)/,
+    "a named screen wins, validated, then the focused monitor")
+  assert.match(panel, /opened && payload\.toggle === true && screen === targetScreen\) \{[\s\S]*?Qt\.callLater\(requestClose\)/,
+    "the bar icon puts the notes away only on its own monitor; elsewhere it brings them over")
+  assert.match(panel, /function showOn\(screen\) \{[\s\S]*?rememberBoard\(\)[\s\S]*?boardPositions\[screen\.name\]/,
+    "switching screens keeps the old place and restores the new one")
+  assert.match(panel, /boards: boardPositions/, "per-screen places are saved")
+  assert.match(panel, /function onScreensChanged\(\)[\s\S]*?Qt\.callLater[\s\S]*?root\.showOn\(root\.focusedScreen\(\)\)/,
+    "an unplugged monitor moves the notes, after its surface has closed")
+  assert.match(widget, /button\.QsWindow\.window/, "the bar icon reports the monitor its bar is on")
+  assert.match(widget, /\^\[A-Za-z\]\[A-Za-z0-9_\.:-\]\{0,127\}\$/, "and only a plausible output name goes into the payload")
+  assert.match(widget, /mouseButton === Qt\.LeftButton\)\s*root\.summon\(\{ toggle: true \}\)/)
 })
 
 test("Ctrl+Shift+C copies whichever of path or image Ctrl+C does not", () => {

@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Io
 import Quickshell.Wayland
 import "DocumentModel.js" as DocumentModel
@@ -14,7 +15,14 @@ Item {
     property var manifest: null
     property bool opened: false
     property bool closingFromHost: false
+    // Whether the board has a place on the screen it is shown on (else it is centred there).
     property bool positionInitialized: false
+    // The screen the notes are shown on, chosen each time they open (see showOn).
+    property var targetScreen: null
+    // Where the board was left on each screen, by output name, in that screen's pixels.
+    property var boardPositions: ({})
+    // A position saved before boards were kept per screen, used once on the first screen opened.
+    property var legacyBoard: null
     property string currentTool: "pen"
     property real penWidth: 2.5
     property string toolbarSide: "right"
@@ -267,12 +275,15 @@ Item {
         var documents = notebook.sheets.map(function(sheet) {
             return sheet.present
         })
+        rememberBoard()
         stateFile.setText(DocumentModel.serialize(documents, notebook.current, {
             tool: currentTool,
             penWidth: penWidth,
             toolbar: toolbarSide,
+            // boardX/boardY keep the open screen's place readable by older versions.
             boardX: positionInitialized ? Math.round(board.x) : null,
-            boardY: positionInitialized ? Math.round(board.y) : null
+            boardY: positionInitialized ? Math.round(board.y) : null,
+            boards: boardPositions
         }, settings))
     }
 
@@ -299,10 +310,15 @@ Item {
             penWidth = restored.ui.penWidth
             toolbarSide = restored.ui.toolbar
             settings = restored.settings
-            if (restored.ui.boardX !== undefined) {
-                board.x = restored.ui.boardX
-                board.y = restored.ui.boardY
+            // Places are applied per screen as the notes open there (showOn).
+            boardPositions = restored.ui.boards || {}
+            if (!restored.ui.boards && restored.ui.boardX !== undefined)
+                legacyBoard = { x: restored.ui.boardX, y: restored.ui.boardY }
+            if (targetScreen && boardPositions[targetScreen.name]) {
+                board.x = boardPositions[targetScreen.name].x
+                board.y = boardPositions[targetScreen.name].y
                 positionInitialized = true
+                clampBoard()
             }
             saveStatus = "SAVED"
         } else if (String(text).trim() !== "") {
@@ -350,8 +366,50 @@ Item {
         scheduleSave()
     }
 
-    // payloadJson may be {"settings": true} to open straight to settings (the bar icon's
-    // right-click); a summon while already open just applies the payload.
+    function screenNamed(name) {
+        for (var i = 0; i < Quickshell.screens.length; i++) {
+            if (Quickshell.screens[i].name === name)
+                return Quickshell.screens[i]
+        }
+        return null
+    }
+
+    // The monitor Hyprland has focused: where a keyboard-summoned panel belongs.
+    function focusedScreen() {
+        var monitor = Hyprland.focusedMonitor
+        return screenNamed(monitor ? String(monitor.name || "") : "")
+            || (Quickshell.screens.length > 0 ? Quickshell.screens[0] : null)
+    }
+
+    function rememberBoard() {
+        if (!targetScreen || !positionInitialized || !DocumentModel.isScreenName(targetScreen.name))
+            return
+        var next = Object.assign({}, boardPositions)
+        next[targetScreen.name] = { x: Math.round(board.x), y: Math.round(board.y) }
+        boardPositions = next
+    }
+
+    // Shows the notes on screen, with the board where it was last left there (or centred).
+    function showOn(screen) {
+        if (!screen || screen === targetScreen)
+            return
+        rememberBoard()
+        targetScreen = screen
+        var saved = boardPositions[screen.name] || legacyBoard
+        legacyBoard = null
+        if (saved) {
+            board.x = saved.x
+            board.y = saved.y
+        }
+        positionInitialized = !!saved
+        Qt.callLater(ensureBoardPosition)
+    }
+
+    // payloadJson may hold "screen" (an output name: the bar icon passes the monitor it sits
+    // on; otherwise the focused monitor is used), "settings": true to open straight to
+    // settings (the bar icon's right-click), and "toggle": true to put the notes away if they
+    // are already open on that screen. A summon while open applies the payload, moving the
+    // notes if it names another screen.
     function open(payloadJson) {
         var payload = {}
         try {
@@ -359,6 +417,13 @@ Item {
         } catch (error) {
             payload = {}
         }
+        var screen = (DocumentModel.isScreenName(payload.screen) ? screenNamed(payload.screen) : null) || focusedScreen()
+        if (opened && payload.toggle === true && screen === targetScreen) {
+            // Not from inside the shell's summon: let it finish first.
+            Qt.callLater(requestClose)
+            return
+        }
+        showOn(screen)
         closingFromHost = false
         opened = true
         Qt.callLater(function() {
@@ -394,7 +459,8 @@ Item {
         })
         return {
             open: opened,
-            screen: surface.screen ? surface.screen.name : "",
+            screen: targetScreen ? targetScreen.name : "",
+            screens: Quickshell.screens.map(function(screen) { return screen.name }),
             sheet: notebook.current + 1,
             sheets: notebook.sheets.length,
             title: currentDocument.title,
@@ -489,6 +555,23 @@ Item {
         id: classicTheme
     }
 
+    // A monitor unplugged under the notes: show them on the focused one instead. Wait a turn so
+    // the removed output finishes closing its surface before another is mapped.
+    Connections {
+        target: Quickshell
+
+        function onScreensChanged() {
+            if (!root.targetScreen || Quickshell.screens.indexOf(root.targetScreen) >= 0)
+                return
+            root.targetScreen = null
+            root.positionInitialized = false
+            Qt.callLater(function() {
+                if (root.opened && !root.targetScreen)
+                    root.showOn(root.focusedScreen())
+            })
+        }
+    }
+
     // Scripting: `omarchy-shell jobo.field-notes <method> [args]`, for demos, tests and
     // automation. Showing and hiding go through the shell so the bar icon stays in step.
     // Actions answer "ok" or "error: <reason>"; sheets are numbered from 1 as on the paper.
@@ -499,6 +582,12 @@ Item {
 
         function open(): string {
             return root.shell && typeof root.shell.summon === "function" && root.shell.summon("jobo.field-notes", "{}") ? "ok" : "error: the shell did not open the panel"
+        }
+
+        function openOn(screen: string): string {
+            if (!DocumentModel.isScreenName(screen) || !root.screenNamed(screen))
+                return "error: no screen named " + screen
+            return root.shell && typeof root.shell.summon === "function" && root.shell.summon("jobo.field-notes", JSON.stringify({ screen: screen })) ? "ok" : "error: the shell did not open the panel"
         }
 
         function close(): string {
@@ -709,7 +798,7 @@ Item {
     PanelWindow {
         id: surface
 
-        screen: Quickshell.screens.length > 0 ? Quickshell.screens[0] : null
+        screen: root.targetScreen
         visible: root.opened
         color: "transparent"
         surfaceFormat.opaque: false

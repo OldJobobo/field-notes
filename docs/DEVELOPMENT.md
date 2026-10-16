@@ -93,13 +93,17 @@ always passed as arguments, never spliced into a shell command.
       ]
     }
   ],
-  "ui": { "tool": "pen", "penWidth": 2.5, "toolbar": "right", "boardX": 840, "boardY": 390 },
+  "ui": { "tool": "pen", "penWidth": 2.5, "toolbar": "right", "boardX": 840, "boardY": 390,
+          "boards": { "DP-1": { "x": 840, "y": 390 }, "HDMI-A-1": { "x": 300, "y": 120 } } },
   "settings": { "theme": true, "tilt": true, "smoothing": "medium", "eraser": "medium",
                 "clipboard": "path", "exportDir": "" }
 }
 ```
 
 - Coordinates are in the sheet's own space: small 520×380, medium 760×560, large 1040×760.
+- `ui.boards` is where the board was left on each monitor, by output name, in that monitor's
+  pixels (at most 16; anything else is dropped). `boardX`/`boardY` repeat the open monitor's
+  place for older versions, and a file with only those uses them for the first monitor opened.
 - Loading treats the file as untrusted (`DocumentModel.sanitizeNotebook`): unknown values
   fall back to defaults, coordinates are clamped to the sheet, IDs are made unique, and
   limits apply — 32 sheets, 4096 objects per sheet, 8192 points per stroke, 250,000 points

@@ -246,3 +246,36 @@ test("settings load with safe defaults and keep only valid values", () => {
   const older = Model.sanitizeNotebook({ schemaVersion: 2, sheets: [{ objects: [] }] }, 760, 560)
   assert.deepEqual(older.settings, Model.defaultSettings(), "files saved before settings existed get the defaults")
 })
+
+test("keeps a board place per screen, dropping anything that is not one", () => {
+  const boards = Model.sanitizeBoards({
+    "DP-1": { x: 840.4, y: 390 },
+    "HDMI-A-1": { x: "12", y: -40 },
+    "__proto__": { x: 1, y: 1 },
+    "bad name": { x: 1, y: 1 },
+    "DP-2": { x: null, y: 5 },
+    "DP-3": { x: Infinity, y: 5 },
+    "eDP-1": "junk",
+  })
+  assert.deepEqual(boards, { "DP-1": { x: 840, y: 390 }, "HDMI-A-1": { x: 12, y: -40 } })
+  assert.equal(Object.getPrototypeOf(boards), Object.prototype)
+  assert.deepEqual(Model.sanitizeBoards([{ x: 1, y: 2 }]), {})
+  assert.deepEqual(Model.sanitizeBoards(null), {})
+
+  const many = {}
+  for (let i = 0; i < 40; i++) many["DP-" + i] = { x: i, y: i }
+  assert.equal(Object.keys(Model.sanitizeBoards(many)).length, Model.MAX_SCREENS)
+
+  assert.equal(Model.isScreenName("DP-1"), true)
+  assert.equal(Model.isScreenName("'; rm -rf ~"), false)
+  assert.equal(Model.isScreenName(""), false)
+})
+
+test("round-trips per-screen board places and omits them when there are none", () => {
+  const doc = Model.addStroke(Model.createDocument(760, 560), [[1, 1], [9, 9]], 3)
+  const ui = { tool: "pen", penWidth: 2.5, toolbar: "right", boardX: 5, boardY: 6, boards: { "DP-1": { x: 5, y: 6 }, "DP-3": { x: 900, y: 120 } } }
+  const restored = Model.sanitizeNotebook(JSON.parse(Model.serialize([doc], 0, ui)), 760, 560)
+  assert.deepEqual(restored.ui, ui)
+  const none = Model.sanitizeNotebook(JSON.parse(Model.serialize([doc], 0, { tool: "pen", boards: {} })), 760, 560)
+  assert.equal("boards" in none.ui, false)
+})
