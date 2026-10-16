@@ -1043,6 +1043,8 @@ Item {
                     onSettingsRequested: root.toggleSettings()
                     copyMode: root.settings.clipboard
                     settingsOpen: root.settingsOpen
+                    // The notes' surface holds keyboard focus while you work in them.
+                    faded: root.settings.fadeToolbar && !Window.active && !root.settingsOpen
                     onCloseRequested: root.requestClose()
                     onGripMoved: function(sceneX, sceneY) {
                         root.dragToolbar(sceneX, sceneY)

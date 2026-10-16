@@ -23,6 +23,7 @@ var SIZE_ORDER = ["small", "medium", "large"]
 var SETTING_CHOICES = {
     theme: [true, false],
     tilt: [true, false],
+    fadeToolbar: [true, false],
     smoothing: ["medium", "off", "light", "strong"],
     eraser: ["medium", "small", "large"],
     clipboard: ["path", "image"]

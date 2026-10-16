@@ -159,6 +159,7 @@ apply immediately; `Esc` or clicking the dimmed paper closes them.
 | --- | --- | --- |
 | **Use Omarchy theme** | On: follow your Omarchy theme · Off: Field Notes' own warm graphite look | On |
 | **Toolbar position** | Left · Top · Bottom · Right | Right |
+| **Fade toolbar** | Fade the toolbar away while you work in another window; it comes back when you return to the notes or point at it | On |
 | **Tilted paper** | A slight angle, like a sheet resting on a desk | On |
 | **Mouse smoothing** | Off · Light · Medium · Strong | Medium |
 | **Eraser size** | Small · Medium · Large | Medium |

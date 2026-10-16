@@ -385,10 +385,13 @@ test("a settings panel opens from the toolbar or Ctrl+, and every setting does s
   assert.match(panel, /settings = restored\.settings/)
   assert.match(panel, /onSettingsChanged: scheduleSave\(\)/)
 
-  for (const key of ["theme", "tilt", "smoothing", "eraser", "clipboard", "exportDir"])
+  for (const key of ["theme", "fadeToolbar", "tilt", "smoothing", "eraser", "clipboard", "exportDir"])
     assert.match(card, new RegExp(`settingChanged\\("${key}"`), `the card offers ${key}`)
   assert.match(card, /toolbarSideRequested\(value\)/)
   assert.match(panel, /tilted: root\.settings\.tilt/)
+  assert.match(panel, /faded: root\.settings\.fadeToolbar && !Window\.active && !root\.settingsOpen/,
+    "the toolbar fades only when the notes lose focus, and never while settings are open")
+  assert.match(tools, /opacity: faded && !hovered && !gripDrag\.active \? 0 : 1/, "pointing at it or dragging it brings it back")
   assert.match(paper, /rotation: tilted \? 0\.8 : 0/)
   assert.match(panel, /mouseSmoothing: root\.smoothingStrength\[root\.settings\.smoothing\]/)
   assert.match(paper, /steadyStroke && mouseSmoothing > 0/, "smoothing off must not divide by zero")

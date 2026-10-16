@@ -245,6 +245,17 @@ Item {
                 SettingSwitch {
                     width: parent.width
                     theme: root.theme
+                    label: "Fade toolbar"
+                    description: "Hide it while you work in another window."
+                    checked: root.settings.fadeToolbar === true
+                    onToggled: function(checked) {
+                        root.settingChanged("fadeToolbar", checked)
+                    }
+                }
+
+                SettingSwitch {
+                    width: parent.width
+                    theme: root.theme
                     label: "Tilted paper"
                     description: "Rest the sheet at a slight angle."
                     checked: root.settings.tilt === true

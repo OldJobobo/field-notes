@@ -29,7 +29,25 @@ Item {
     property string copyMode: "path"
     property string exportedMode: "path"
     property bool settingsOpen: false
+    // Faded away while the notes don't have keyboard focus (the panel decides). Pointing at
+    // the toolbar or holding its grip brings it straight back.
+    property bool faded: false
+    readonly property bool hovered: islandHover.hovered
     readonly property var penWidths: [1.5, 2.5, 4, 7]
+
+    opacity: faded && !hovered && !gripDrag.active ? 0 : 1
+
+    // Slow to leave, quick to return.
+    Behavior on opacity {
+        NumberAnimation {
+            duration: root.opacity > 0.5 ? 420 : 180
+            easing.type: Easing.InOutQuad
+        }
+    }
+
+    HoverHandler {
+        id: islandHover
+    }
     signal toolSelected(string tool)
     signal undoRequested()
     signal redoRequested()
