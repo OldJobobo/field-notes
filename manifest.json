@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jobo.field-notes",
   "name": "Field Notes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "OldJobobo",
   "license": "MIT",
   "description": "A floating notebook for sketches and typed notes, with graph, dot and ruled paper.",

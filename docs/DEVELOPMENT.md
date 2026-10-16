@@ -172,6 +172,7 @@ open; and restart the shell to confirm everything comes back.
 ## Releasing
 
 1. Run the three checks above and the live checks.
-2. Bump `version` in `manifest.json` (the paper shows it) and the matching assertion in
-   `tests/contract.test.js`.
+2. Bump `version` in `manifest.json`. It is the only copy: the paper footer and settings read
+   it at runtime. Update the version in the README's sheet diagram to match (a test checks).
 3. Update `README.md` for anything users will notice.
+4. Commit, push, then tag that commit `v<version>` and publish a GitHub release.

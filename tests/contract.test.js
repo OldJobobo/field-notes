@@ -15,7 +15,7 @@ test("declares an independent Field Notes panel and bar widget", () => {
   assert.equal(manifest.schemaVersion, 1)
   assert.equal(manifest.id, "jobo.field-notes")
   assert.equal(manifest.name, "Field Notes")
-  assert.equal(manifest.version, "0.1.0")
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/, "the version is plain semver, shown on the paper as v<version>")
   assert.deepEqual(manifest.kinds, ["panel", "bar-widget"])
   assert.equal(manifest.keepLoaded, true)
   assert.equal(manifest.entryPoints.panel, "Panel.qml")
@@ -447,4 +447,17 @@ test("Open folder launches the file manager detached, like Omarchy, preferring g
     "xdg-open alone fails on handlers whose Exec quotes the program path")
   assert.match(open, /"field-notes", exportDir\]\)/, "the folder is an argument, never part of the command string")
   assert.doesNotMatch(panel, /id: openFolder/)
+})
+
+test("the version shown anywhere matches the manifest", () => {
+  const version = JSON.parse(read("manifest.json")).version
+  const panel = read("Panel.qml")
+  // The paper footer and settings read the manifest at runtime rather than keeping a copy.
+  assert.match(panel, /Qt\.resolvedUrl\("manifest\.json"\)[\s\S]*?root\.appVersion = String\(JSON\.parse\(text\(\)\)\.version/)
+  for (const file of ["Panel.qml", "PaperSurface.qml", "SettingsPanel.qml"])
+    assert.doesNotMatch(read(file), /v?\d+\.\d+\.\d+/, `${file} must not hard-code a version`)
+  const shown = [...read("README.md").matchAll(/FIELD NOTES v(\d+\.\d+\.\d+)/g)].map(match => match[1])
+  assert.ok(shown.length > 0)
+  for (const value of shown)
+    assert.equal(value, version, "the README's picture of the paper shows the manifest version")
 })
