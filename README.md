@@ -189,6 +189,38 @@ danger = "urgent"
 
 Every key is optional; anything you leave out comes from the theme.
 
+## Scripting
+
+Scripts, demos and agents can drive Field Notes through the shell:
+
+```sh
+omarchy-shell jobo.field-notes open
+omarchy-shell jobo.field-notes newSheet
+omarchy-shell jobo.field-notes setPaper dots
+omarchy-shell jobo.field-notes draw '60 80  200 80  200 160' 900   # x y pairs, drawn over 0.9 s
+omarchy-shell jobo.field-notes copy path        # prints the PNG's path
+```
+
+| Method | What it does |
+| --- | --- |
+| `status` | The open sheet as JSON: number, title, paper, size, tool, save status, the last export, and the sheet's `corners` on screen |
+| `open` / `close` / `toggle` | Show or put away the notes |
+| `newSheet` / `selectSheet <n>` | Add a sheet after the last, or open sheet `n` (counted from 1) |
+| `setTitle <text>` / `setPaper <graph\|dots\|ruled\|plain>` / `setSize <small\|medium\|large>` | Change the open sheet |
+| `setTool <select\|pen\|eraser\|text>` / `setPenWidth <1–12>` | Pick a tool and pen width |
+| `draw <points> <ms>` | Draw a stroke live over `ms` milliseconds, exactly as given. `points` is `"x y x y …"` in sheet coordinates (not a bracketed list, which the command line splits up); strokes queue up and draw one after another |
+| `stopDrawing` | Drop the strokes still waiting to be drawn |
+| `addNote <x> <y> <text>` | Add a typed note; `\n` starts a new line |
+| `undo` / `redo` | Step through the open sheet's history |
+| `clear` | Clear the open sheet, like the toolbar's Clear (undoable) |
+| `center` | Centre the board |
+| `copy <path\|image>` | Save the sheet as a PNG and copy its path or the image; `""` copies what `Ctrl+C` does |
+
+Sheet coordinates run from the top-left of the paper: small sheets are 520×380, medium 760×560
+and large 1040×760. While the notes are open, `status` gives the paper's corners in screen pixels, clockwise
+from top-left, so a script can turn a point on screen into one on the sheet. Actions answer `ok` or
+`error: …`.
+
 ## Your notes
 
 Your sheets, settings and layout are saved to a single file on your computer — nothing is

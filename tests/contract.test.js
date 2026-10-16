@@ -438,6 +438,25 @@ test("the README documents every keyboard shortcut the panel handles", () => {
   assert.equal((readme.match(/```/g) || []).length % 2, 0, "README code fences are balanced")
 })
 
+test("the scripting interface is documented and draws through its own wet layer", () => {
+  const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
+  const readme = read("README.md")
+  const ipc = panel.slice(panel.indexOf("IpcHandler {"))
+  assert.match(ipc, /target: "jobo\.field-notes"/)
+  const methods = [...ipc.matchAll(/^        function (\w+)\(/gm)].map(match => match[1])
+  assert.ok(methods.length >= 10, "the IpcHandler declares its methods")
+  for (const method of methods)
+    assert.ok(readme.includes("`" + method), `README's Scripting table must mention \`${method}\``)
+  assert.match(ipc, /root\.shell\.summon\("jobo\.field-notes"/, "open goes through the shell so the bar stays in step")
+  assert.match(panel, /paper\.cancelScriptStrokes\(\)\n        paper\.cancelGesture\(\)/,
+    "leaving a sheet drops strokes meant for it")
+  assert.match(paper, /id: scriptWet/)
+  assert.match(paper, /DocumentModel\.addStroke\(document, stroke\.points, stroke\.width\)/,
+    "script strokes are committed exactly as given, never smoothed")
+  assert.match(paper, /id: scriptHandoff/, "the queue moves on even if the ink layer never paints")
+})
+
 test("Open folder launches the file manager detached, like Omarchy, preferring gio", () => {
   const panel = read("Panel.qml")
   const open = panel.slice(panel.indexOf("function openExportFolder()"))

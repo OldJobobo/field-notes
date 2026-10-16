@@ -41,6 +41,13 @@ Item {
     property bool steadyStroke: false
     property string statusText: "READY"
     property var activeStroke: []
+    // Script strokes waiting, the one being laid down, and how much of it shows.
+    property var scriptQueue: []
+    property var scriptStroke: null
+    property var scriptInk: []
+    property real scriptElapsed: 0
+    property bool scriptCommitted: false
+    readonly property int scriptPending: scriptQueue.length + (scriptStroke ? 1 : 0)
     property var gestureOrigin: null
     property string selectedObjectId: ""
     property string editingObjectId: ""
@@ -168,6 +175,83 @@ Item {
         var steps = Math.max(1, Math.ceil(Geometry.pointDistance(from, to) / (eraserRadius / 2)))
         for (var i = 1; i <= steps; i++)
             eraseAt(from[0] + (to[0] - from[0]) * i / steps, from[1] + (to[1] - from[1]) * i / steps)
+    }
+
+    // Strokes drawn by scripts (Panel's IpcHandler). Each is laid down along its length over
+    // its duration, a frame at a time, in its own wet layer so it never mixes with the pen,
+    // then committed exactly as given: no smoothing, like a tablet.
+    function drawScriptStroke(points, width, duration) {
+        scriptQueue = scriptQueue.concat([{ points: points, width: width, duration: Math.max(0, duration) }])
+        if (!scriptStroke)
+            nextScriptStroke()
+    }
+
+    function nextScriptStroke() {
+        if (scriptQueue.length === 0) {
+            scriptStroke = null
+            return
+        }
+        var stroke = scriptQueue[0]
+        scriptQueue = scriptQueue.slice(1)
+        var lengths = [0]
+        for (var i = 1; i < stroke.points.length; i++)
+            lengths.push(lengths[i - 1] + Geometry.pointDistance(stroke.points[i - 1], stroke.points[i]))
+        stroke.lengths = lengths
+        scriptCommitted = false
+        scriptElapsed = 0
+        scriptStroke = stroke
+        advanceScriptStroke(0)
+    }
+
+    function advanceScriptStroke(seconds) {
+        var stroke = scriptStroke
+        if (!stroke || scriptCommitted)
+            return
+        scriptElapsed += seconds
+        var t = stroke.duration > 0 ? Math.min(1, scriptElapsed * 1000 / stroke.duration) : 1
+        // A pen gathers speed and eases off at the end of a line.
+        var reach = stroke.lengths[stroke.lengths.length - 1] * (0.5 * t + 0.5 * t * t * (3 - 2 * t))
+        var shown = [stroke.points[0]]
+        for (var i = 1; i < stroke.points.length; i++) {
+            if (stroke.lengths[i] <= reach) {
+                shown.push(stroke.points[i])
+                continue
+            }
+            var span = stroke.lengths[i] - stroke.lengths[i - 1]
+            var f = span > 0 ? (reach - stroke.lengths[i - 1]) / span : 0
+            var a = stroke.points[i - 1]
+            var b = stroke.points[i]
+            shown.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f])
+            break
+        }
+        scriptInk = shown
+        scriptWet.requestPaint()
+        if (t < 1)
+            return
+        scriptCommitted = true
+        var next = DocumentModel.addStroke(document, stroke.points, stroke.width)
+        if (next === document) {
+            finishScriptStroke()
+        } else {
+            commit(next) // the script layer keeps the stroke until the ink layer has painted it
+            scriptHandoff.restart()
+        }
+    }
+
+    function finishScriptStroke() {
+        scriptCommitted = false
+        scriptInk = []
+        scriptStroke = null
+        scriptWet.requestPaint()
+        nextScriptStroke()
+    }
+
+    function cancelScriptStrokes() {
+        scriptQueue = []
+        scriptCommitted = false
+        scriptInk = []
+        scriptStroke = null
+        scriptWet.requestPaint()
     }
 
     function strokePoints() {
@@ -409,6 +493,40 @@ Item {
             onPainted: {
                 if (!editorPointer.pressed)
                     root.clearWetInk()
+                if (root.scriptCommitted)
+                    root.finishScriptStroke()
+            }
+        }
+
+        // The script stroke being laid down.
+        Canvas {
+            id: scriptWet
+
+            anchors.fill: parent
+            antialiasing: true
+
+            onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                if (root.scriptStroke)
+                    root.traceStroke(ctx, root.scriptInk, root.scriptStroke.width, root.graphite)
+            }
+        }
+
+        FrameAnimation {
+            running: root.scriptStroke !== null && !root.scriptCommitted
+            onTriggered: root.advanceScriptStroke(frameTime)
+        }
+
+        // In case the ink layer doesn't paint (the notes were put away mid-stroke), the
+        // queue still moves on.
+        Timer {
+            id: scriptHandoff
+
+            interval: 250
+            onTriggered: {
+                if (root.scriptCommitted)
+                    root.finishScriptStroke()
             }
         }
 

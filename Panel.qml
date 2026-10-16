@@ -64,6 +64,9 @@ Item {
     property string pendingExport: ""
     // What the export in progress puts on the clipboard: "path" or "image".
     property string pendingMode: "path"
+    // The last export to finish, for the scripting interface.
+    property string lastExport: ""
+    property bool lastExportOk: false
     property string appVersion: ""
 
     function focusKeys() {
@@ -98,6 +101,7 @@ Item {
     // to the sheet being left.
     function leaveSheet() {
         focusKeys()
+        paper.cancelScriptStrokes()
         paper.cancelGesture()
         paper.clearSelection()
     }
@@ -163,6 +167,8 @@ Item {
     }
 
     function finishExport(ok) {
+        lastExport = pendingExport
+        lastExportOk = ok
         pendingExport = ""
         tools.exportFinished(ok, pendingMode)
     }
@@ -380,6 +386,93 @@ Item {
             close()
     }
 
+    // The open sheet and its place on screen, for scripts (see the IpcHandler below).
+    function scriptStatus() {
+        var corners = [[0, 0], [paper.width, 0], [paper.width, paper.height], [0, paper.height]].map(function(point) {
+            var mapped = paper.mapToItem(null, point[0], point[1])
+            return [Math.round(mapped.x * 10) / 10, Math.round(mapped.y * 10) / 10]
+        })
+        return {
+            open: opened,
+            screen: surface.screen ? surface.screen.name : "",
+            sheet: notebook.current + 1,
+            sheets: notebook.sheets.length,
+            title: currentDocument.title,
+            paper: currentDocument.paper,
+            size: DocumentModel.sizeName(currentDocument),
+            page: { width: currentDocument.page.width, height: currentDocument.page.height },
+            objects: currentDocument.objects.length,
+            tool: currentTool,
+            penWidth: penWidth,
+            toolbar: toolbarSide,
+            settingsOpen: settingsOpen,
+            // Script strokes still to be drawn, including the one being drawn.
+            drawing: paper.scriptPending,
+            saved: saveStatus,
+            lastExport: lastExport,
+            lastExportOk: lastExportOk,
+            // The sheet's corners in the screen's pixels, clockwise from top-left, after the
+            // board's scale and the paper's tilt: sheet point (x, y) lands at
+            // corners[0] + (corners[1] - corners[0]) * x / page.width + (corners[3] - corners[0]) * y / page.height.
+            corners: opened ? corners : null
+        }
+    }
+
+    function scriptSetSize(size) {
+        if (!DocumentModel.SIZES[size])
+            return "error: size is small, medium or large"
+        if (size === DocumentModel.sizeName(currentDocument))
+            return "ok"
+        if (!DocumentModel.fitsSize(currentDocument, size))
+            return "error: the ink doesn't fit a " + size + " sheet"
+        focusKeys()
+        commitDocument(DocumentModel.setSize(currentDocument, size))
+        return "ok"
+    }
+
+    // pointsText is "x y x y ..." in sheet coordinates (commas between numbers are fine; a
+    // bracketed list is not, because the qs command line splits "[a,b]" into arguments).
+    // The stroke is drawn live over durationMs with the current pen width, after any strokes
+    // still being drawn; with the notes put away it is added at once.
+    function scriptDraw(pointsText, durationMs) {
+        var numbers = String(pointsText).trim().split(/[\s,;]+/).map(Number)
+        if (numbers.length % 2 !== 0 || numbers.some(function(value) { return !isFinite(value) }))
+            return "error: points are numbers in x y pairs, like \"10 20 30 40\""
+        if (numbers.length < 4)
+            return "error: a stroke needs at least two points"
+        if (numbers.length > 2 * 8192)
+            return "error: a stroke has at most 8192 points"
+        var points = []
+        for (var i = 0; i < numbers.length; i += 2)
+            points.push([numbers[i], numbers[i + 1]])
+        paper.drawScriptStroke(points, penWidth, opened ? Math.max(0, Math.min(60000, durationMs)) : 0)
+        return "ok"
+    }
+
+    // A typed note with its top-left at (x, y) in sheet coordinates; "\n" starts a new line.
+    function scriptNote(x, y, text) {
+        var clean = String(text || "").replace(/\\n/g, "\n")
+        if (clean.trim() === "")
+            return "error: a note needs some text"
+        var next = DocumentModel.addText(currentDocument, x, y, clean)
+        if (next === currentDocument)
+            return "error: the sheet is full"
+        var added = next.objects[next.objects.length - 1]
+        commitDocument(DocumentModel.updateText(next, added.id, clean, clean.split("\n").length * 21 + 8))
+        return "ok"
+    }
+
+    // mode is "path", "image", or "" for whatever Ctrl+C copies. Returns the PNG's path;
+    // status() reports lastExport and lastExportOk once it is written and copied.
+    function scriptCopy(mode) {
+        if (mode !== "" && mode !== "path" && mode !== "image")
+            return "error: mode is path, image or empty"
+        if (pendingExport !== "")
+            return "error: an export is already running"
+        copyImagePath(mode !== "" && mode !== settings.clipboard)
+        return pendingExport
+    }
+
     onNotebookChanged: scheduleSave()
     onCurrentToolChanged: scheduleSave()
     onPenWidthChanged: scheduleSave()
@@ -394,6 +487,103 @@ Item {
 
     ClassicTheme {
         id: classicTheme
+    }
+
+    // Scripting: `omarchy-shell jobo.field-notes <method> [args]`, for demos, tests and
+    // automation. Showing and hiding go through the shell so the bar icon stays in step.
+    // Actions answer "ok" or "error: <reason>"; sheets are numbered from 1 as on the paper.
+    IpcHandler {
+        target: "jobo.field-notes"
+
+        function status(): string { return JSON.stringify(root.scriptStatus()) }
+
+        function open(): string {
+            return root.shell && typeof root.shell.summon === "function" && root.shell.summon("jobo.field-notes", "{}") ? "ok" : "error: the shell did not open the panel"
+        }
+
+        function close(): string {
+            if (root.opened)
+                root.requestClose()
+            return "ok"
+        }
+
+        function toggle(): string { return root.opened ? close() : open() }
+
+        function newSheet(): string {
+            if (root.notebook.sheets.length >= DocumentModel.MAX_SHEETS)
+                return "error: the notebook is full"
+            root.addSheet()
+            return "ok"
+        }
+
+        function selectSheet(number: int): string {
+            if (number < 1 || number > root.notebook.sheets.length)
+                return "error: there is no sheet " + number
+            root.selectSheet(number - 1)
+            return "ok"
+        }
+
+        function setTitle(title: string): string {
+            root.renameSheet(title)
+            return "ok"
+        }
+
+        function setPaper(name: string): string {
+            if (DocumentModel.PAPERS.indexOf(name) < 0)
+                return "error: paper is graph, dots, ruled or plain"
+            root.focusKeys()
+            root.commitDocument(DocumentModel.setPaper(root.currentDocument, name))
+            return "ok"
+        }
+
+        function setSize(name: string): string { return root.scriptSetSize(name) }
+
+        function setTool(name: string): string {
+            if (DocumentModel.TOOLS.indexOf(name) < 0)
+                return "error: tool is select, pen, eraser or text"
+            root.selectTool(name)
+            return "ok"
+        }
+
+        function setPenWidth(width: real): string {
+            root.setPenWidth(width)
+            return "ok"
+        }
+
+        function clear(): string {
+            root.clearDocument()
+            return "ok"
+        }
+
+        function center(): string {
+            root.centerBoard(true)
+            return "ok"
+        }
+
+        function undo(): string {
+            if (!root.canUndo)
+                return "error: nothing to undo"
+            root.undo()
+            return "ok"
+        }
+
+        function redo(): string {
+            if (!root.canRedo)
+                return "error: nothing to redo"
+            root.redo()
+            return "ok"
+        }
+
+        function draw(points: string, durationMs: int): string { return root.scriptDraw(points, durationMs) }
+
+        function stopDrawing(): string {
+            paper.cancelScriptStrokes()
+            return "ok"
+        }
+
+        function addNote(x: real, y: real, text: string): string { return root.scriptNote(x, y, text) }
+
+        function copy(mode: string): string { return root.scriptCopy(mode) }
     }
     Component.onDestruction: flushSave()
 

@@ -171,7 +171,13 @@ until a restart. Then:
 omarchy-shell shell toggle jobo.field-notes '{}'                    # open or close
 omarchy-shell shell summon jobo.field-notes '{"settings":true}'     # open at settings
 journalctl --user -t omarchy-shell -f                               # shell log
+omarchy-shell jobo.field-notes status | jq                          # the open sheet, as scripts see it
 ```
+
+The scripting interface (the `IpcHandler` at the end of `Panel.qml`, documented in the
+README) is the quickest way to set up a sheet for a live check. Strokes from `draw` play
+through their own wet layer in `PaperSurface.qml` (`scriptWet`), driven by a
+`FrameAnimation`, and are committed exactly as given.
 
 Live checks worth doing after larger changes: draw a fast stroke and erase across it; type,
 move and delete a note; switch sheets, papers and sizes; dock the toolbar on each side and
