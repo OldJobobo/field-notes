@@ -64,6 +64,9 @@ test("the panel reads and saves notes only after the check passes", () => {
 
 test("the corrupt-file backup never writes through a symlink", () => {
   assert.deepEqual(backupArgs.slice(0, 4), ["cp", "--no-dereference", "--remove-destination", "--"])
+  const trimmedArgs = /id: backupTrimmed[\s\S]*?command: \[([^\]]*)\]/.exec(panel)[1]
+  assert.equal(trimmedArgs.replace(".trimmed", ".corrupt"), /id: backupCorrupt[\s\S]*?command: \[([^\]]*)\]/.exec(panel)[1],
+    "the trimmed-file backup copies with exactly the same safe command")
   const dir = workspace()
   const notes = path.join(dir, "notes.json")
   const backup = notes + ".corrupt"

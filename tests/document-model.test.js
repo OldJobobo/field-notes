@@ -279,3 +279,20 @@ test("round-trips per-screen board places and omits them when there are none", (
   const none = Model.sanitizeNotebook(JSON.parse(Model.serialize([doc], 0, { tool: "pen", boards: {} })), 760, 560)
   assert.equal("boards" in none.ui, false)
 })
+
+test("counts stroke points and says when loading had to trim a notebook", () => {
+  const stroke = n => ({ id: "stroke-1", type: "stroke", width: 2, points: Array.from({ length: n }, (_, i) => [i % 700, 5]) })
+  const fits = Model.sanitizeNotebook({ schemaVersion: 2, sheets: [{ objects: [stroke(8000)] }, { objects: [stroke(8000)] }] }, 760, 560)
+  assert.equal(fits.trimmed, false)
+  assert.equal(Model.totalPoints(fits.documents), 16000)
+
+  // 31 full strokes on 31 sheets is past the 250,000-point budget.
+  const over = Model.sanitizeNotebook({ schemaVersion: 2, sheets: Array.from({ length: 31 }, () => ({ objects: [stroke(8192)] })) }, 760, 560)
+  assert.equal(over.trimmed, true, "the panel must keep a copy before saving over it")
+  assert.equal(Model.totalPoints(over.documents), Model.MAX_TOTAL_POINTS)
+
+  assert.equal(Model.sanitizeNotebook({ schemaVersion: 2, sheets: [{ objects: [stroke(9000)] }] }, 760, 560).trimmed, true,
+    "an over-long stroke is trimmed too")
+  assert.equal(Model.sanitizeNotebook({ schemaVersion: 2, sheets: Array(40).fill({ title: "x", objects: [] }) }, 760, 560).trimmed, true,
+    "so are sheets past the limit")
+})

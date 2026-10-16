@@ -91,6 +91,21 @@ Item {
         sizeLabel.flash(message)
     }
 
+    function refuse(message) {
+        sizeLabel.flash(message)
+    }
+
+    // A change the panel would not take (the notebook is full): drop what is showing but was
+    // never committed, so the paper matches what is saved. Waiting script strokes would be
+    // refused too, so they go as well.
+    function discardUncommitted() {
+        clearWetInk()
+        if (editingObjectId === "")
+            draftDocument = null
+        cancelScriptStrokes()
+        ink.requestPaint()
+    }
+
     function editTitle() {
         finishEditing()
         titleField.startEditing()

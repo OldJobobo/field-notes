@@ -101,8 +101,28 @@ Item {
         clampBoard()
     }
 
+    // Loading keeps at most DocumentModel.MAX_TOTAL_POINTS stroke points across the notebook,
+    // so no change may take it past that: the excess would be lost on the next load and the
+    // save after it. A change that shrinks an already over-full notebook is always allowed.
+    function fitsBudget(nextNotebook) {
+        var present = function(sheet) { return sheet.present }
+        var after = DocumentModel.totalPoints(nextNotebook.sheets.map(present))
+        return after <= DocumentModel.MAX_TOTAL_POINTS || after <= DocumentModel.totalPoints(notebook.sheets.map(present))
+    }
+
+    function refuseFull() {
+        paper.discardUncommitted()
+        paper.refuse("The notebook is full")
+    }
+
     function commitDocument(nextDocument) {
-        setNotebook(Notebook.replaceCurrent(notebook, History.commit(historyState, nextDocument)))
+        var next = Notebook.replaceCurrent(notebook, History.commit(historyState, nextDocument))
+        if (!fitsBudget(next)) {
+            refuseFull()
+            return false
+        }
+        setNotebook(next)
+        return true
     }
 
     // Commits an open note and drops any gesture or selection, whose object ids belong
@@ -131,14 +151,25 @@ Item {
         currentTool = tool
     }
 
+    // Undo and redo can bring back strokes too (undoing a Clear restores a whole sheet).
     function undo() {
         focusKeys()
-        setNotebook(Notebook.replaceCurrent(notebook, History.undo(historyState)))
+        var next = Notebook.replaceCurrent(notebook, History.undo(historyState))
+        if (fitsBudget(next))
+            setNotebook(next)
+        else
+            refuseFull()
+        return notebook === next
     }
 
     function redo() {
         focusKeys()
-        setNotebook(Notebook.replaceCurrent(notebook, History.redo(historyState)))
+        var next = Notebook.replaceCurrent(notebook, History.redo(historyState))
+        if (fitsBudget(next))
+            setNotebook(next)
+        else
+            refuseFull()
+        return notebook === next
     }
 
     function cyclePaper() {
@@ -272,6 +303,11 @@ Item {
         saveTimer.stop()
         if (!stateReady)
             return
+        // A backup of the file is still being made: save once it is done.
+        if (backupCorrupt.running || backupTrimmed.running) {
+            saveTimer.restart()
+            return
+        }
         var documents = notebook.sheets.map(function(sheet) {
             return sheet.present
         })
@@ -320,7 +356,15 @@ Item {
                 positionInitialized = true
                 clampBoard()
             }
-            saveStatus = "SAVED"
+            if (restored.trimmed) {
+                // The file held more than loading keeps (written by an older version, or by
+                // hand): keep the whole of it before the next save replaces it.
+                console.warn("Field Notes: " + stateFile.path + " holds more than a notebook can keep; the full file is saved as notes.json.trimmed")
+                backupTrimmed.running = true
+                saveStatus = "RECOVERED"
+            } else {
+                saveStatus = "SAVED"
+            }
         } else if (String(text).trim() !== "") {
             // Keep a copy of the unreadable file before the next save replaces it.
             backupCorrupt.running = true
@@ -511,6 +555,9 @@ Item {
         var points = []
         for (var i = 0; i < numbers.length; i += 2)
             points.push([numbers[i], numbers[i + 1]])
+        var present = notebook.sheets.map(function(sheet) { return sheet.present })
+        if (DocumentModel.totalPoints(present) + points.length > DocumentModel.MAX_TOTAL_POINTS)
+            return "error: the notebook is full"
         paper.drawScriptStroke(points, penWidth, opened ? Math.max(0, Math.min(60000, durationMs)) : 0)
         return "ok"
     }
@@ -652,15 +699,13 @@ Item {
         function undo(): string {
             if (!root.canUndo)
                 return "error: nothing to undo"
-            root.undo()
-            return "ok"
+            return root.undo() ? "ok" : "error: the notebook is full"
         }
 
         function redo(): string {
             if (!root.canRedo)
                 return "error: nothing to redo"
-            root.redo()
-            return "ok"
+            return root.redo() ? "ok" : "error: the notebook is full"
         }
 
         function draw(points: string, durationMs: int): string { return root.scriptDraw(points, durationMs) }
@@ -767,6 +812,13 @@ Item {
 
         // Never follows symlinks: replaces any existing backup rather than writing through it.
         command: ["cp", "--no-dereference", "--remove-destination", "--", stateFile.path, stateFile.path + ".corrupt"]
+    }
+
+    Process {
+        id: backupTrimmed
+
+        // The same rules as backupCorrupt, for a file that loading had to trim.
+        command: ["cp", "--no-dereference", "--remove-destination", "--", stateFile.path, stateFile.path + ".trimmed"]
     }
 
     FileView {

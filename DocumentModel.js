@@ -330,6 +330,8 @@ function sanitizeObjects(rawObjects, document, budget) {
         var id = String(source.id || "")
         var object = null
         if (source.type === "stroke" && Array.isArray(source.points)) {
+            if (source.points.length > Math.min(budget.points, MAX_STROKE_POINTS))
+                budget.trimmed = true
             var points = cleanPoints(document, source.points.slice(0, budget.points))
             if (points.length === 0)
                 continue
@@ -357,6 +359,8 @@ function sanitizeObjects(rawObjects, document, budget) {
             seen[id] = true
         objects.push(object)
     }
+    if (i < rawObjects.length)
+        budget.trimmed = true
 
     for (var j = 0; j < objects.length; j++) {
         if (objects[j].id === "")
@@ -467,9 +471,26 @@ function sanitizeNotebook(raw, width, height) {
             open = documents.length
         documents.push(document)
     }
+    if (i < rawSheets.length)
+        budget.trimmed = true
     if (documents.length === 0)
         documents.push(createDocument(width, height))
-    return { documents: documents, current: open, ui: sanitizeUi(raw.ui), settings: sanitizeSettings(raw.settings) }
+    // trimmed: the file held more than these limits allow, so saving now would lose the rest.
+    return { documents: documents, current: open, ui: sanitizeUi(raw.ui), settings: sanitizeSettings(raw.settings),
+             trimmed: budget.trimmed === true }
+}
+
+// Stroke points across a set of sheets: what the notebook budget (MAX_TOTAL_POINTS) counts.
+function totalPoints(documents) {
+    var total = 0
+    for (var i = 0; i < documents.length; i++) {
+        var objects = documents[i].objects
+        for (var j = 0; j < objects.length; j++) {
+            if (objects[j].type === "stroke")
+                total += objects[j].points.length
+        }
+    }
+    return total
 }
 
 function serialize(documents, current, ui, settings) {
@@ -488,6 +509,8 @@ function serialize(documents, current, ui, settings) {
 if (typeof module !== "undefined")
     module.exports = {
         MAX_SHEETS: MAX_SHEETS,
+        MAX_TOTAL_POINTS: MAX_TOTAL_POINTS,
+        totalPoints: totalPoints,
         PAPERS: PAPERS,
         createDocument: createDocument,
         setPaper: setPaper,

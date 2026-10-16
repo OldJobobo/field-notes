@@ -242,6 +242,10 @@ sent anywhere:
 - To back up your notes, copy that file. To start over, close Field Notes and move it aside.
 - If the file is ever unreadable, Field Notes keeps a copy as `notes.json.corrupt` before
   saving a fresh one, and loads whatever it safely can.
+- A notebook holds up to 250,000 pen points across all its sheets. Field Notes stops you
+  drawing past that rather than save more than it can load again. A file holding more (from an
+  older version, or edited by hand) is copied to `notes.json.trimmed` before anything is saved
+  over it.
 
 ## Troubleshooting
 
@@ -261,6 +265,9 @@ does nothing, the app you're pasting into may not accept images — paste the pa
 
 **A sheet won't get smaller.** Something on it reaches past the smaller size. Move or erase
 it first.
+
+**It says "The notebook is full".** The notebook has reached its 250,000 pen points. Erase or
+clear something, on any sheet, to draw more.
 
 **Open in settings does nothing.** Field Notes opens the folder with your default file manager
 (`xdg-mime query default inode/directory`). Check that app opens folders on its own.

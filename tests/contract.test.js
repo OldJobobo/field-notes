@@ -432,6 +432,24 @@ test("the notes open on the monitor you are using and remember a place on each",
   assert.match(widget, /mouseButton === Qt\.LeftButton\)\s*root\.summon\(\{ toggle: true \}\)/)
 })
 
+test("nothing saved is ever lost on the next load: the point budget holds while you draw", () => {
+  const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
+  assert.match(panel, /function fitsBudget\(nextNotebook\) \{[\s\S]*?DocumentModel\.totalPoints[\s\S]*?DocumentModel\.MAX_TOTAL_POINTS/,
+    "edits are held to the same budget loading enforces")
+  assert.match(panel, /function commitDocument\(nextDocument\) \{[\s\S]*?if \(!fitsBudget\(next\)\) \{\s*refuseFull\(\)\s*return false/)
+  for (const step of ["undo", "redo"])
+    assert.match(panel, new RegExp(`function ${step}\\(\\) \\{[\\s\\S]*?if \\(fitsBudget\\(next\\)\\)\\s*setNotebook\\(next\\)\\s*else\\s*refuseFull\\(\\)`),
+      `${step} can restore strokes, so it is held to the budget too`)
+  assert.match(panel, /function refuseFull\(\) \{\s*paper\.discardUncommitted\(\)/, "a refused stroke must not stay on the paper looking saved")
+  assert.match(paper, /function discardUncommitted\(\) \{[\s\S]*?clearWetInk\(\)[\s\S]*?draftDocument = null[\s\S]*?cancelScriptStrokes\(\)/)
+  assert.match(panel, /totalPoints\(present\) \+ points\.length > DocumentModel\.MAX_TOTAL_POINTS\)\s*return "error: the notebook is full"/,
+    "a scripted stroke that cannot fit is refused up front")
+  assert.match(panel, /if \(restored\.trimmed\) \{[\s\S]*?backupTrimmed\.running = true/, "a file that had to be trimmed is copied before it is saved over")
+  assert.match(panel, /function saveNow\(\) \{[\s\S]*?if \(backupCorrupt\.running \|\| backupTrimmed\.running\) \{\s*saveTimer\.restart\(\)\s*return/,
+    "and the save waits for that copy")
+})
+
 test("Ctrl+Shift+C copies whichever of path or image Ctrl+C does not", () => {
   const panel = read("Panel.qml")
   assert.match(panel, /control && event\.key === Qt\.Key_C\) \{\s*root\.copyImagePath\(shift\)/)
