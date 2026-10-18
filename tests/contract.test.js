@@ -432,22 +432,28 @@ test("the notes open on the monitor you are using and remember a place on each",
   assert.match(widget, /mouseButton === Qt\.LeftButton\)\s*root\.summon\(\{ toggle: true \}\)/)
 })
 
-test("nothing saved is ever lost on the next load: the point budget holds while you draw", () => {
+test("nothing saved is ever lost on the next load: every load limit holds while you edit", () => {
   const panel = read("Panel.qml")
   const paper = read("PaperSurface.qml")
-  assert.match(panel, /function fitsBudget\(nextNotebook\) \{[\s\S]*?DocumentModel\.totalPoints[\s\S]*?DocumentModel\.MAX_TOTAL_POINTS/,
-    "edits are held to the same budget loading enforces")
-  assert.match(panel, /function commitDocument\(nextDocument\) \{[\s\S]*?if \(!fitsBudget\(next\)\) \{\s*refuseFull\(\)\s*return false/)
+  assert.match(panel, /function fitsLimits\(nextNotebook\) \{[\s\S]*?DocumentModel\.overLimits\(nextNotebook[\s\S]*?after === 0 \|\| after <= DocumentModel\.overLimits\(notebook/,
+    "edits are held to every limit loading enforces, not just points")
+  assert.match(panel, /function commitDocument\(nextDocument\) \{[\s\S]*?if \(!fitsLimits\(next\)\) \{\s*refuseFull\(\)\s*return false/,
+    "including eraser cuts, which split strokes into more objects")
   for (const step of ["undo", "redo"])
-    assert.match(panel, new RegExp(`function ${step}\\(\\) \\{[\\s\\S]*?if \\(fitsBudget\\(next\\)\\)\\s*setNotebook\\(next\\)\\s*else\\s*refuseFull\\(\\)`),
-      `${step} can restore strokes, so it is held to the budget too`)
-  assert.match(panel, /function refuseFull\(\) \{\s*paper\.discardUncommitted\(\)/, "a refused stroke must not stay on the paper looking saved")
+    assert.match(panel, new RegExp(`function ${step}\\(\\) \\{[\\s\\S]*?if \\(fitsLimits\\(next\\)\\)\\s*setNotebook\\(next\\)\\s*else\\s*refuseFull\\(\\)`),
+      `${step} can restore strokes, so it is held to the limits too`)
+  assert.match(panel, /function refuseFull\(\) \{\s*paper\.discardUncommitted\(\)/, "a refused change must not stay on the paper looking saved")
   assert.match(paper, /function discardUncommitted\(\) \{[\s\S]*?clearWetInk\(\)[\s\S]*?draftDocument = null[\s\S]*?cancelScriptStrokes\(\)/)
   assert.match(panel, /totalPoints\(present\) \+ points\.length > DocumentModel\.MAX_TOTAL_POINTS\)\s*return "error: the notebook is full"/,
     "a scripted stroke that cannot fit is refused up front")
-  assert.match(panel, /if \(restored\.trimmed\) \{[\s\S]*?backupTrimmed\.running = true/, "a file that had to be trimmed is copied before it is saved over")
-  assert.match(panel, /function saveNow\(\) \{[\s\S]*?if \(backupCorrupt\.running \|\| backupTrimmed\.running\) \{\s*saveTimer\.restart\(\)\s*return/,
-    "and the save waits for that copy")
+  assert.match(panel, /if \(restored\.trimmed\) \{[\s\S]*?startBackup\(backupTrimmed\)/, "a file that had to be trimmed is copied before it is saved over")
+  assert.match(panel, /startBackup\(backupCorrupt\)/)
+  assert.match(panel, /function saveNow\(\) \{[\s\S]*?if \(backupState === "copying"\) \{\s*saveTimer\.restart\(\)\s*return\s*\}\s*if \(backupState === "failed"\) \{\s*saveStatus = "NOT SAVED"\s*return/,
+    "saving waits for the copy, and never saves over the file if the copy failed")
+  for (const id of ["backupCorrupt", "backupTrimmed"])
+    assert.match(panel, new RegExp(`id: ${id}[\\s\\S]*?onExited: function\\(exitCode\\) \\{\\s*root\\.finishBackup\\(exitCode`), `${id} reports whether cp succeeded`)
+  assert.match(panel, /backupState = exitCode === 0 \? "done" : "failed"/, "only a zero exit counts as a copy")
+  assert.match(panel, /id: backupWatchdog[\s\S]*?onTriggered: root\.finishBackup\(-1/, "a copy that never reports back counts as failed")
 })
 
 test("Ctrl+Shift+C copies whichever of path or image Ctrl+C does not", () => {

@@ -245,7 +245,7 @@ sent anywhere:
 - A notebook holds up to 250,000 pen points across all its sheets. Field Notes stops you
   drawing past that rather than save more than it can load again. A file holding more (from an
   older version, or edited by hand) is copied to `notes.json.trimmed` before anything is saved
-  over it.
+  over it. If that copy can't be made, Field Notes leaves the file alone and shows `NOT SAVED`.
 
 ## Troubleshooting
 
@@ -255,7 +255,9 @@ sent anywhere:
 **Nothing is copied.** Copying needs `wl-copy` (from `wl-clipboard`). If an image paste
 does nothing, the app you're pasting into may not accept images — paste the path instead.
 
-**The status says `NOT SAVED`.** Field Notes can't safely use its notes file. Check that
+**The status says `NOT SAVED`.** Field Notes can't safely use its notes file. Either the file failed
+the safety checks below, or Field Notes could not copy it aside (`notes.json.corrupt` or
+`notes.json.trimmed`) before saving over it. Check that
 `~/.local/state/field-notes/` exists and is yours, and that `notes.json` is a plain file under
 16 MiB, not a link. For safety, Field Notes won't read or overwrite anything else; the shell log
 (`journalctl --user -t omarchy-shell`) says which check failed.
@@ -266,8 +268,9 @@ does nothing, the app you're pasting into may not accept images — paste the pa
 **A sheet won't get smaller.** Something on it reaches past the smaller size. Move or erase
 it first.
 
-**It says "The notebook is full".** The notebook has reached its 250,000 pen points. Erase or
-clear something, on any sheet, to draw more.
+**It says "The notebook is full".** The notebook has reached a limit it can't save past: 250,000
+pen points across all sheets, or 4,096 strokes and notes on one sheet (the eraser adds to that
+count when it cuts a stroke in two). Clear something, or move to another sheet, to keep going.
 
 **Open in settings does nothing.** Field Notes opens the folder with your default file manager
 (`xdg-mime query default inode/directory`). Check that app opens folders on its own.

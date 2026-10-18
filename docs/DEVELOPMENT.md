@@ -108,10 +108,15 @@ always passed as arguments, never spliced into a shell command.
   fall back to defaults, coordinates are clamped to the sheet, IDs are made unique, and
   limits apply — 32 sheets, 4096 objects per sheet, 8192 points per stroke, 250,000 points
   in total, 4096 characters per note, 60 per title, 512 per export folder.
-- Editing is held to the same budget (`fitsBudget` in `Panel.qml`): a stroke, eraser cut,
-  undo or redo that would take the notebook past 250,000 points is refused, so a saved file
-  always loads in full. When loading does have to trim (`trimmed` from `sanitizeNotebook`), the
-  file is copied to `notes.json.trimmed` first, and saving waits for that copy.
+- Editing is held to every one of those limits (`DocumentModel.overLimits`, checked by
+  `fitsLimits` in `Panel.qml`): a stroke, eraser cut (which can add objects), undo, redo or
+  scripted stroke that would go past one is refused, so a saved file always loads in full. A
+  test drives random edits, eraser splits included, and checks that any notebook within the
+  limits reloads unchanged.
+- When loading does have to trim (`trimmed` from `sanitizeNotebook`), or the file is
+  unreadable, it is copied aside first (`notes.json.trimmed` or `.corrupt`). Saving waits
+  for the copy and goes ahead only once `cp` exits 0; a failed copy, or one that never
+  reports back within 10 seconds, leaves the file untouched and the status at `NOT SAVED`.
 - Blank sheets are dropped unless they are the open one.
 - Version 1 files (a single sheet with `objects` at the top level) load as one sheet; files
   without `settings` get the defaults. Older versions of Field Notes cannot read version 2.

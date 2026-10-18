@@ -72,6 +72,8 @@ Item {
     property string pendingExport: ""
     // What the export in progress puts on the clipboard: "path" or "image".
     property string pendingMode: "path"
+    // The copy of the notes file made before saving over it: "", "copying", "done" or "failed".
+    property string backupState: ""
     // The last export to finish, for the scripting interface.
     property string lastExport: ""
     property bool lastExportOk: false
@@ -101,13 +103,14 @@ Item {
         clampBoard()
     }
 
-    // Loading keeps at most DocumentModel.MAX_TOTAL_POINTS stroke points across the notebook,
-    // so no change may take it past that: the excess would be lost on the next load and the
-    // save after it. A change that shrinks an already over-full notebook is always allowed.
-    function fitsBudget(nextNotebook) {
+    // Loading keeps only what fits its limits (DocumentModel.overLimits: points in total, objects
+    // per sheet, and the rest), so no change may take the notebook past them: the excess would
+    // be lost on the next load and the save after it. Erasing can add objects as well as points,
+    // by splitting strokes. A change that leaves an already over-full notebook no worse is allowed.
+    function fitsLimits(nextNotebook) {
         var present = function(sheet) { return sheet.present }
-        var after = DocumentModel.totalPoints(nextNotebook.sheets.map(present))
-        return after <= DocumentModel.MAX_TOTAL_POINTS || after <= DocumentModel.totalPoints(notebook.sheets.map(present))
+        var after = DocumentModel.overLimits(nextNotebook.sheets.map(present))
+        return after === 0 || after <= DocumentModel.overLimits(notebook.sheets.map(present))
     }
 
     function refuseFull() {
@@ -117,7 +120,7 @@ Item {
 
     function commitDocument(nextDocument) {
         var next = Notebook.replaceCurrent(notebook, History.commit(historyState, nextDocument))
-        if (!fitsBudget(next)) {
+        if (!fitsLimits(next)) {
             refuseFull()
             return false
         }
@@ -155,7 +158,7 @@ Item {
     function undo() {
         focusKeys()
         var next = Notebook.replaceCurrent(notebook, History.undo(historyState))
-        if (fitsBudget(next))
+        if (fitsLimits(next))
             setNotebook(next)
         else
             refuseFull()
@@ -165,7 +168,7 @@ Item {
     function redo() {
         focusKeys()
         var next = Notebook.replaceCurrent(notebook, History.redo(historyState))
-        if (fitsBudget(next))
+        if (fitsLimits(next))
             setNotebook(next)
         else
             refuseFull()
@@ -303,9 +306,14 @@ Item {
         saveTimer.stop()
         if (!stateReady)
             return
-        // A backup of the file is still being made: save once it is done.
-        if (backupCorrupt.running || backupTrimmed.running) {
+        // The file must be safely copied before anything is saved over it. Wait while the copy
+        // runs; if it failed, keep the file exactly as it is.
+        if (backupState === "copying") {
             saveTimer.restart()
+            return
+        }
+        if (backupState === "failed") {
+            saveStatus = "NOT SAVED"
             return
         }
         var documents = notebook.sheets.map(function(sheet) {
@@ -321,6 +329,25 @@ Item {
             boardY: positionInitialized ? Math.round(board.y) : null,
             boards: boardPositions
         }, settings))
+    }
+
+    // Copies the notes file aside (backupCorrupt or backupTrimmed) before anything is saved over
+    // it. Saving waits for the copy and only goes ahead once cp has succeeded (see saveNow).
+    function startBackup(process) {
+        backupState = "copying"
+        backupWatchdog.restart()
+        process.running = true
+    }
+
+    function finishBackup(exitCode, name) {
+        if (backupState !== "copying")
+            return
+        backupWatchdog.stop()
+        backupState = exitCode === 0 ? "done" : "failed"
+        if (backupState === "failed") {
+            console.warn("Field Notes: could not copy " + stateFile.path + " to " + name + "; it will not be saved over")
+            saveStatus = "NOT SAVED"
+        }
     }
 
     function flushSave() {
@@ -360,14 +387,14 @@ Item {
                 // The file held more than loading keeps (written by an older version, or by
                 // hand): keep the whole of it before the next save replaces it.
                 console.warn("Field Notes: " + stateFile.path + " holds more than a notebook can keep; the full file is saved as notes.json.trimmed")
-                backupTrimmed.running = true
+                startBackup(backupTrimmed)
                 saveStatus = "RECOVERED"
             } else {
                 saveStatus = "SAVED"
             }
         } else if (String(text).trim() !== "") {
             // Keep a copy of the unreadable file before the next save replaces it.
-            backupCorrupt.running = true
+            startBackup(backupCorrupt)
             saveStatus = "RECOVERED"
         } else {
             saveStatus = "READY"
@@ -558,6 +585,8 @@ Item {
         var present = notebook.sheets.map(function(sheet) { return sheet.present })
         if (DocumentModel.totalPoints(present) + points.length > DocumentModel.MAX_TOTAL_POINTS)
             return "error: the notebook is full"
+        if (currentDocument.objects.length >= DocumentModel.MAX_OBJECTS)
+            return "error: the sheet is full"
         paper.drawScriptStroke(points, penWidth, opened ? Math.max(0, Math.min(60000, durationMs)) : 0)
         return "ok"
     }
@@ -812,6 +841,9 @@ Item {
 
         // Never follows symlinks: replaces any existing backup rather than writing through it.
         command: ["cp", "--no-dereference", "--remove-destination", "--", stateFile.path, stateFile.path + ".corrupt"]
+        onExited: function(exitCode) {
+            root.finishBackup(exitCode, "notes.json.corrupt")
+        }
     }
 
     Process {
@@ -819,6 +851,17 @@ Item {
 
         // The same rules as backupCorrupt, for a file that loading had to trim.
         command: ["cp", "--no-dereference", "--remove-destination", "--", stateFile.path, stateFile.path + ".trimmed"]
+        onExited: function(exitCode) {
+            root.finishBackup(exitCode, "notes.json.trimmed")
+        }
+    }
+
+    // A copy that never reports back (cp could not start) counts as failed, not as done.
+    Timer {
+        id: backupWatchdog
+
+        interval: 10000
+        onTriggered: root.finishBackup(-1, "a backup")
     }
 
     FileView {

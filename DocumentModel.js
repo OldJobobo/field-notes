@@ -480,6 +480,27 @@ function sanitizeNotebook(raw, width, height) {
              trimmed: budget.trimmed === true }
 }
 
+// How far a notebook goes past what loading keeps (sanitizeNotebook): 0 means it reloads in
+// full. It counts every limit loading enforces (sheets, objects per sheet, points per stroke,
+// characters per note and points in total), so editing can refuse anything that would be lost.
+function overLimits(documents) {
+    var over = Math.max(0, documents.length - MAX_SHEETS)
+    var points = 0
+    for (var i = 0; i < documents.length; i++) {
+        var objects = documents[i].objects
+        over += Math.max(0, objects.length - MAX_OBJECTS)
+        for (var j = 0; j < objects.length; j++) {
+            if (objects[j].type === "stroke") {
+                points += objects[j].points.length
+                over += Math.max(0, objects[j].points.length - MAX_STROKE_POINTS)
+            } else if (objects[j].type === "text") {
+                over += Math.max(0, String(objects[j].text).length - MAX_TEXT)
+            }
+        }
+    }
+    return over + Math.max(0, points - MAX_TOTAL_POINTS)
+}
+
 // Stroke points across a set of sheets: what the notebook budget (MAX_TOTAL_POINTS) counts.
 function totalPoints(documents) {
     var total = 0
@@ -511,6 +532,8 @@ if (typeof module !== "undefined")
         MAX_SHEETS: MAX_SHEETS,
         MAX_TOTAL_POINTS: MAX_TOTAL_POINTS,
         totalPoints: totalPoints,
+        overLimits: overLimits,
+        MAX_OBJECTS: MAX_OBJECTS,
         PAPERS: PAPERS,
         createDocument: createDocument,
         setPaper: setPaper,

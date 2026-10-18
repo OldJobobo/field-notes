@@ -296,3 +296,67 @@ test("counts stroke points and says when loading had to trim a notebook", () => 
   assert.equal(Model.sanitizeNotebook({ schemaVersion: 2, sheets: Array(40).fill({ title: "x", objects: [] }) }, 760, 560).trimmed, true,
     "so are sheets past the limit")
 })
+
+test("overLimits measures everything loading would drop", () => {
+  const doc = Model.createDocument(760, 560)
+  assert.equal(Model.overLimits([doc]), 0)
+  const crowded = Object.assign({}, doc, { objects: Array.from({ length: Model.MAX_OBJECTS + 3 }, (_, i) =>
+    ({ id: "stroke-" + (i + 1), type: "stroke", width: 2, points: [[1, 1], [2, 2]] })) })
+  assert.equal(Model.overLimits([crowded]), 3, "objects past 4,096 on one sheet")
+  const long = Object.assign({}, doc, { objects: [{ id: "text-1", type: "text", x: 0, y: 0, width: 220, height: 40, size: 16, text: "x".repeat(5000) }] })
+  assert.equal(Model.overLimits([long]), 5000 - 4096, "characters past a note's limit")
+  assert.equal(Model.overLimits(Array(Model.MAX_SHEETS + 2).fill(doc)), 2, "sheets past 32")
+})
+
+test("any notebook within the limits reloads exactly as it was saved", () => {
+  const Geometry = require("../Geometry.js")
+  let seed = 7
+  const rand = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+  const strokeAt = (x, y, n) => Array.from({ length: n }, (_, i) => [x + Math.cos(i / 3) * i * 0.8, y + Math.sin(i / 3) * i * 0.8])
+  let checked = 0, sawOver = false
+  for (let round = 0; round < 40; round++) {
+    let docs = [Model.createDocument(760, 560), Model.setPaper(Model.createSheet("small"), "dots")]
+    for (let step = 0; step < 60; step++) {
+      const s = Math.floor(rand() * docs.length)
+      let d = docs[s]
+      const r = rand()
+      if (r < 0.45) d = Model.addStroke(d, strokeAt(rand() * d.page.width, rand() * d.page.height, 2 + Math.floor(rand() * 400)), 1 + rand() * 6)
+      else if (r < 0.55) d = Model.addText(d, rand() * d.page.width, rand() * d.page.height, "note " + step)
+      else if (r < 0.65 && d.objects.length) d = Model.translateObject(d, d.objects[Math.floor(rand() * d.objects.length)].id, rand() * 900 - 450, rand() * 700 - 350)
+      else if (r < 0.7) d = Model.setSize(d, ["small", "medium", "large"][Math.floor(rand() * 3)])
+      else {
+        // Erase: cut every stroke the ring touches, as the eraser tool does.
+        const centre = [rand() * d.page.width, rand() * d.page.height], radius = 4 + rand() * 30
+        for (const object of d.objects.slice()) {
+          if (object.type === "stroke" && Geometry.strokeTouches(object.points, centre, radius))
+            d = Model.replaceStrokeSegments(d, object.id, Geometry.splitStroke(object.points, centre, radius))
+        }
+      }
+      docs = docs.slice(); docs[s] = d
+    }
+    // Every few rounds, shred one sheet with a fine eraser until it passes 4,096 objects.
+    if (round % 8 === 0) {
+      let d = Model.addStroke(docs[0], Array.from({ length: 8000 }, (_, i) => [5 + (i % 740), 10 + Math.floor(i / 740) * 50]), 2)
+      for (let x = 8; x < 750 && d.objects.length <= Model.MAX_OBJECTS; x += 0.17) {
+        for (const object of d.objects.slice()) {
+          if (object.type === "stroke" && Geometry.strokeTouches(object.points, [x, 10 + (Math.floor(x * 7) % 11) * 50], 0.05))
+            d = Model.replaceStrokeSegments(d, object.id, Geometry.splitStroke(object.points, [x, 10 + (Math.floor(x * 7) % 11) * 50], 0.05))
+        }
+      }
+      docs = [d, docs[1]]
+    }
+    if (Model.overLimits(docs) > 0) {
+      sawOver = true
+      continue
+    }
+    const reloaded = Model.sanitizeNotebook(JSON.parse(Model.serialize(docs, 0, {})), 760, 560)
+    assert.equal(reloaded.trimmed, false, `round ${round}: reported as trimmed`)
+    // Blank sheets other than the open one are dropped by design; everything else comes back as is.
+    const kept = docs.filter((doc, i) => !Model.isBlank(doc) || i === 0)
+    const shape = doc => ({ objects: doc.objects, paper: doc.paper, page: doc.page, title: doc.title })
+    assert.deepEqual(reloaded.documents.map(shape), kept.map(shape), `round ${round}: the notebook must reload unchanged`)
+    checked++
+  }
+  assert.ok(checked >= 20, `checked ${checked} notebooks`)
+  assert.ok(sawOver, "the eraser could still push a sheet past its object limit, which the panel must refuse")
+})
