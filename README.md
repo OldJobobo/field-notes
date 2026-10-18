@@ -58,7 +58,7 @@ automatically.
  │                                                          │
  │                your drawings and notes                   │
  │                                                          │
- │ FIELD NOTES v0.1.4                                 SAVED │ ← version · save status
+ │ FIELD NOTES v0.1.5                                 SAVED │ ← version · save status
  └──────────────────────────────────────────────────────────┘
 ```
 
