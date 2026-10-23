@@ -1,0 +1,16 @@
+[
+  { "name": "ink", "line": "{\"t\":\"ink\",\"points\":[90.0,140.0,200.5,110.3]}", "argv": ["jobo.field-notes", "ink", "90.0 140.0 200.5 110.3"] },
+  { "name": "ink-more", "line": "{\"t\":\"ink\",\"points\":[262.0,40.6]}", "argv": ["jobo.field-notes", "ink", "90.0 140.0 200.5 110.3 262.0 40.6"] },
+  { "name": "ink-clear", "line": "{\"t\":\"ink\",\"points\":[]}", "argv": ["jobo.field-notes", "ink", ""] },
+  { "name": "erase", "line": "{\"t\":\"erase\",\"points\":[10.0,20.0,30.5,40.0],\"end\":false}", "argv": ["jobo.field-notes", "erase", "10.0 20.0 30.5 40.0", "0"] },
+  { "name": "erase-end", "line": "{\"t\":\"erase\",\"id\":8,\"points\":[50.0,60.0],\"end\":true}", "argv": ["jobo.field-notes", "erase", "30.5 40.0 50.0 60.0", "1"] },
+  { "name": "width", "line": "{\"t\":\"width\",\"id\":9,\"value\":4.0}", "argv": ["jobo.field-notes", "setPenWidth", "4.0"] },
+  { "name": "clear", "line": "{\"t\":\"clear\",\"id\":10}", "argv": ["jobo.field-notes", "clear"] },
+  { "name": "select", "line": "{\"t\":\"select\",\"id\":11,\"sheet\":2}", "argv": ["jobo.field-notes", "selectSheet", "2"] },
+  { "name": "new", "line": "{\"t\":\"new\",\"id\":12}", "argv": ["jobo.field-notes", "newSheet"] },
+  { "name": "title", "line": "{\"t\":\"title\",\"id\":13,\"text\":\"Meeting notes\"}", "argv": ["jobo.field-notes", "setTitle", "Meeting notes"] },
+  { "name": "note", "line": "{\"t\":\"note\",\"id\":14,\"x\":90.0,\"y\":200.0,\"text\":\"Call back\\nÁgua\"}", "argv": ["jobo.field-notes", "addNote", "90.0", "200.0", "Call back\\nÁgua"] },
+  { "name": "undo", "line": "{\"t\":\"undo\",\"id\":15}", "argv": ["jobo.field-notes", "undo"] },
+  { "name": "redo", "line": "{\"t\":\"redo\",\"id\":16}", "argv": ["jobo.field-notes", "redo"] },
+  { "name": "show", "line": "{\"t\":\"show\",\"id\":17}", "argv": ["jobo.field-notes", "open"] }
+]
