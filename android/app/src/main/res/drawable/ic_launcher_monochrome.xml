@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher icon for themed icons: the sheet as an outline, so the pencil line stays visible. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M35.4,30.4 H72.6 V77.6 H35.4 Z"
+        android:strokeWidth="2.8"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M40.7,62.9 C44,55.1 47.3,52.9 50.1,57.3 C52.9,61.8 55.7,62.9 58.4,56.2 C60.7,50.7 64,48.5 67.3,50.7"
+        android:strokeWidth="2.9"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

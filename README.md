@@ -150,6 +150,47 @@ settings.
 Field Notes remembers where you left the board on each monitor, and where you docked the
 toolbar. On small screens the whole board scales down to fit.
 
+## Drawing from a phone
+
+An Android phone or tablet can draw on the open sheet, and follows it: the sheet's paper, title,
+ink and typed notes appear on the device, and Undo and Redo, the eraser, new typed notes, the
+title and sheet switching all act on the desktop sheet. Switch on **Draw from a phone** in
+Settings; Field Notes then runs `bridge/fieldnotes-bridge`, which links the devices adb can
+see and hands their strokes to the [scripting interface](#scripting). Strokes are ordinary
+strokes: saved, undoable and exported like any other, and they appear on the desktop while the
+pen moves.
+
+You need Python 3 (Omarchy has it), `adb` (`sudo pacman -S android-tools`, or the Android SDK's
+platform-tools) and the companion app, Field Notes for Android (in [`android/`](android/README.md)), on the device with
+USB debugging on. To build, install and pair it, plug the device in and run, in `android/`:
+
+```sh
+make run
+```
+
+(That is `./gradlew installDebug` followed by `bridge/fieldnotes-bridge --pair`, which gives the app this
+desktop's token and opens it; see `android/README.md` for the requirements and the first run.)
+
+The line under the switch says what the bridge is doing:
+
+| Status | Meaning |
+| --- | --- |
+| `Waiting for a phone` | running; no device is listed by `adb devices` |
+| `Linked: SM-T970 (USB)` | the device is linked, over USB or Wi-Fi |
+| `adb not found: install android-tools` | the bridge needs `adb`, on `PATH` or in `~/Android/Sdk` |
+| `Field Notes is not responding` | the shell's scripting interface did not answer |
+| `Another bridge is already running` | port 7741 is taken, for example by a bridge started by hand |
+
+**Wi-Fi.** With Wireless debugging paired (`adb pair`), run `adb connect <ip>:<port>` once, with
+the port from the device's Wireless debugging screen. The bridge remembers the address, reconnects
+when the cable comes out and moves the link to Wi-Fi within a few seconds. The port changes when
+Wireless debugging is switched off and on, or the device restarts; connect again then.
+
+**What it opens.** The bridge listens on `127.0.0.1:7741` only. Devices reach it through
+`adb reverse`, not over the network, and each connection must open with the pairing token kept in
+`~/.local/state/fieldnotes-bridge/token`. It stops when you switch the setting off or the
+shell ends. `bridge/README.md` documents the protocol.
+
 ## Settings
 
 Open settings with the gear button, `Ctrl+,`, or by right-clicking the bar icon. Changes
@@ -165,6 +206,7 @@ apply immediately; `Esc` or clicking the dimmed paper closes them.
 | **Eraser size** | Small · Medium · Large | Medium |
 | **Ctrl+C copies** | File path · Image (`Ctrl+Shift+C` does the other) | File path |
 | **Export folder** | Any folder; `~` works; empty uses `~/Pictures/field-notes` | Empty |
+| **Draw from a phone** | On: Field Notes runs the [phone bridge](#drawing-from-a-phone) while it is loaded · Off: nothing runs | Off |
 
 **About** shows where your notes are saved, with buttons to **Center board** and
 **Reset settings**.
@@ -215,9 +257,11 @@ omarchy-shell jobo.field-notes copy path        # prints the PNG's path
 | `newSheet` / `selectSheet <n>` | Add a sheet after the last, or open sheet `n` (counted from 1) |
 | `setTitle <text>` / `setPaper <graph\|dots\|ruled\|plain>` / `setSize <small\|medium\|large>` | Change the open sheet |
 | `setTool <select\|pen\|eraser\|text>` / `setPenWidth <1–12>` | Pick a tool and pen width |
-| `draw <points> <ms>` | Draw a stroke live over `ms` milliseconds, exactly as given. `points` is `"x y x y …"` in sheet coordinates (not a bracketed list, which the command line splits up); strokes queue up and draw one after another |
+| `ink <points>` | Show a stroke in progress, as a phone does while its pen moves: it stays until `draw` takes its place, `ink ""` removes it, or five seconds pass without news. `points` as for `draw` |
+| `erase <points> <final>` | Sweep the eraser along `points` with the current eraser size; the result shows at once. `final` `1` ends the gesture as one undo step, `0` keeps it open (it closes itself after five seconds). A note being typed is committed first |
+| `draw <points> <ms>` | Draw a stroke live over `ms` milliseconds, exactly as given. `points` is `"x y x y …"` in sheet coordinates (not a bracketed list, which the command line splits up); strokes queue up and draw one after another. A note being typed is committed first |
 | `stopDrawing` | Drop the strokes still waiting to be drawn |
-| `addNote <x> <y> <text>` | Add a typed note; `\n` starts a new line |
+| `addNote <x> <y> <text>` | Add a typed note; `\n` starts a new line and `\\` is a backslash. A note being typed is committed first |
 | `undo` / `redo` | Step through the open sheet's history |
 | `clear` | Clear the open sheet, like the toolbar's Clear (undoable) |
 | `center` | Centre the board |

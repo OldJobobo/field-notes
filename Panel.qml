@@ -78,6 +78,9 @@ Item {
     property string lastExport: ""
     property bool lastExportOk: false
     property string appVersion: ""
+    // The phone bridge runs while Settings > Phone is on; its last `status:` line is shown there.
+    readonly property bool phoneWanted: stateReady && settings.phoneSync === true
+    property string phoneStatus: "Off"
 
     function focusKeys() {
         // Taking focus away from an open note editor also commits it.
@@ -567,21 +570,52 @@ Item {
         return "ok"
     }
 
-    // pointsText is "x y x y ..." in sheet coordinates (commas between numbers are fine; a
-    // bracketed list is not, because the qs command line splits "[a,b]" into arguments).
-    // The stroke is drawn live over durationMs with the current pen width, after any strokes
-    // still being drawn; with the notes put away it is added at once.
-    function scriptDraw(pointsText, durationMs) {
-        var numbers = String(pointsText).trim().split(/[\s,;]+/).map(Number)
+    // "x y x y ..." as [[x, y], ...], or an "error: ..." string. Empty is no points.
+    function scriptPoints(pointsText) {
+        var text = String(pointsText).trim()
+        var numbers = text === "" ? [] : text.split(/[\s,;]+/).map(Number)
         if (numbers.length % 2 !== 0 || numbers.some(function(value) { return !isFinite(value) }))
             return "error: points are numbers in x y pairs, like \"10 20 30 40\""
-        if (numbers.length < 4)
-            return "error: a stroke needs at least two points"
         if (numbers.length > 2 * 8192)
             return "error: a stroke has at most 8192 points"
         var points = []
         for (var i = 0; i < numbers.length; i += 2)
             points.push([numbers[i], numbers[i + 1]])
+        return points
+    }
+
+    // The stroke a phone is drawing, shown until it is drawn for real with `draw`; "" takes it away.
+    function scriptInk(pointsText) {
+        var points = scriptPoints(pointsText)
+        if (typeof points === "string")
+            return points
+        paper.showLiveInk(points)
+        return "ok"
+    }
+
+    // A phone's eraser path with the current eraser size. Sweeps show live; final (1) ends the
+    // gesture as one undo step. A note being typed is committed first: the sweep's draft would
+    // take its place.
+    function scriptErase(pointsText, final) {
+        var points = scriptPoints(pointsText)
+        if (typeof points === "string")
+            return points
+        focusKeys()
+        paper.eraseScript(points, final !== 0)
+        return "ok"
+    }
+
+    // pointsText is "x y x y ..." in sheet coordinates (commas between numbers are fine; a
+    // bracketed list is not, because the qs command line splits "[a,b]" into arguments).
+    // The stroke is drawn live over durationMs with the current pen width, after any strokes
+    // still being drawn; with the notes put away it is added at once.
+    function scriptDraw(pointsText, durationMs) {
+        var points = scriptPoints(pointsText)
+        if (typeof points === "string")
+            return points
+        if (points.length < 2)
+            return "error: a stroke needs at least two points"
+        focusKeys() // commits a note being typed, which committing the stroke would otherwise take with it
         var present = notebook.sheets.map(function(sheet) { return sheet.present })
         if (DocumentModel.totalPoints(present) + points.length > DocumentModel.MAX_TOTAL_POINTS)
             return "error: the notebook is full"
@@ -593,9 +627,10 @@ Item {
 
     // A typed note with its top-left at (x, y) in sheet coordinates; "\n" starts a new line.
     function scriptNote(x, y, text) {
-        var clean = String(text || "").replace(/\\n/g, "\n")
+        var clean = String(text || "").replace(/\\([n\\])/g, function(escape, character) { return character === "n" ? "\n" : "\\" })
         if (clean.trim() === "")
             return "error: a note needs some text"
+        focusKeys() // commits a note being typed, which this note's commit would otherwise replace
         var next = DocumentModel.addText(currentDocument, x, y, clean)
         if (next === currentDocument)
             return "error: the sheet is full"
@@ -613,6 +648,11 @@ Item {
             return "error: an export is already running"
         copyImagePath(mode !== "" && mode !== settings.clipboard)
         return pendingExport
+    }
+
+    onPhoneWantedChanged: {
+        phoneStatus = phoneWanted ? "Starting" : "Off"
+        phoneBridge.running = phoneWanted
     }
 
     onNotebookChanged: scheduleSave()
@@ -689,6 +729,7 @@ Item {
         }
 
         function setTitle(title: string): string {
+            root.focusKeys() // commits a note being typed, as a phone's title would otherwise replace it
             root.renameSheet(title)
             return "ok"
         }
@@ -738,6 +779,10 @@ Item {
         }
 
         function draw(points: string, durationMs: int): string { return root.scriptDraw(points, durationMs) }
+
+        function ink(points: string): string { return root.scriptInk(points) }
+
+        function erase(points: string, final: int): string { return root.scriptErase(points, final) }
 
         function stopDrawing(): string {
             paper.cancelScriptStrokes()
@@ -820,6 +865,43 @@ Item {
 
         onExited: function(exitCode) {
             root.finishExport(exitCode === 0)
+        }
+    }
+
+    // bridge/fieldnotes-bridge links phones over adb and passes their strokes to the scripting
+    // interface above. It exits when its stdin closes, which happens when the shell goes, so it
+    // never outlives it. Exit 2 means port 7741 is taken, most likely by a bridge run by hand.
+    Process {
+        id: phoneBridge
+
+        command: ["python3", decodeURIComponent(Qt.resolvedUrl("bridge/fieldnotes-bridge").toString().replace(/^file:\/\//, "")), "--exit-with-stdin"]
+        stdinEnabled: true
+        stdout: SplitParser {
+            onRead: function(line) {
+                if (line.indexOf("status: ") === 0)
+                    root.phoneStatus = line.slice(8)
+            }
+        }
+        stderr: SplitParser {
+            onRead: function(line) {
+                console.warn("Field Notes phone bridge: " + line)
+            }
+        }
+        onExited: function(exitCode) {
+            if (root.phoneWanted) {
+                root.phoneStatus = exitCode === 2 ? "Another bridge is already running" : "Stopped, restarting"
+                phoneRetry.restart()
+            }
+        }
+    }
+
+    Timer {
+        id: phoneRetry
+
+        interval: 5000
+        onTriggered: {
+            if (root.phoneWanted && !phoneBridge.running)
+                phoneBridge.running = true
         }
     }
 
@@ -1168,6 +1250,7 @@ Item {
                     toolbarSide: root.toolbarSide
                     version: root.appVersion
                     notesPath: stateFile.path
+                    phoneStatus: root.phoneStatus
                     defaultExportDir: root.defaultExportDir
                     home: root.home
                     onSettingChanged: function(key, value) {

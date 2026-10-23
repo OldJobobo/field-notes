@@ -1,0 +1,17 @@
+{
+  "t": "sheet",
+  "settled": 0,
+  "sheet": 2,
+  "sheets": 2,
+  "title": "Meeting notes",
+  "paper": "ruled",
+  "width": 1040,
+  "height": 760,
+  "penWidth": 4,
+  "objects": [
+    { "type": "stroke", "width": 2.5, "points": [90, 140, 200.5, 110.3, 262, 40.6] },
+    { "type": "text", "x": 90, "y": 200, "width": 220, "height": 40, "text": "Call back\nÁgua — 5 €", "size": 16 },
+    { "type": "stroke", "width": 7, "points": [500.1, 600.9] },
+    { "type": "text", "x": 300, "y": 400, "width": 220, "height": 28, "text": "no size given", "size": 16 }
+  ]
+}

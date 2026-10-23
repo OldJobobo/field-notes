@@ -24,6 +24,7 @@ var SETTING_CHOICES = {
     theme: [true, false],
     tilt: [true, false],
     fadeToolbar: [true, false],
+    phoneSync: [false, true],
     smoothing: ["medium", "off", "light", "strong"],
     eraser: ["medium", "small", "large"],
     clipboard: ["path", "image"]
