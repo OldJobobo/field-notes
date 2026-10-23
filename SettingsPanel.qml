@@ -11,6 +11,7 @@ Item {
     property string toolbarSide: "right"
     property string version: ""
     property string notesPath: ""
+    property string phoneStatus: ""
     property string defaultExportDir: ""
     property string home: ""
     // Largest the card may be; it uses two columns when there is room, and the body
@@ -407,6 +408,21 @@ Item {
                         font.pixelSize: 11
                         wrapMode: Text.WordWrap
                         textFormat: Text.PlainText
+                    }
+                }
+
+                SectionHeading {
+                    text: "Phone"
+                }
+
+                SettingSwitch {
+                    width: parent.width
+                    theme: root.theme
+                    label: "Draw from a phone"
+                    description: root.phoneStatus
+                    checked: root.settings.phoneSync === true
+                    onToggled: function(checked) {
+                        root.settingChanged("phoneSync", checked)
                     }
                 }
 

@@ -27,6 +27,7 @@ no build step and no dependencies beyond the shell.
 | `Notebook.js` | The list of sheets and the open one; adding, switching, dropping blank sheets |
 | `Geometry.js` | Eraser cuts, hit testing, stroke simplification and mouse smoothing |
 | `Layout.js` | Board scaling, toolbar docking geometry, nearest-side snapping |
+| `bridge/` | The phone bridge (Python) and its tests; see `bridge/README.md` |
 | `tests/` | Node tests: unit tests for the JS modules and contract tests for the QML |
 
 ## How it fits together
@@ -138,6 +139,7 @@ always passed as arguments, never spliced into a shell command.
 node --test tests/*.test.js     # unit and contract tests (Node 18+)
 qmlformat *.qml > /dev/null     # QML syntax check
 omarchy plugin validate .       # manifest check
+python3 -m unittest discover -s bridge   # the phone bridge (Python 3)
 ```
 
 - **Unit tests** cover the JavaScript modules: geometry, the document model (including
@@ -191,6 +193,10 @@ The scripting interface (the `IpcHandler` at the end of `Panel.qml`, documented 
 README) is the quickest way to set up a sheet for a live check. Strokes from `draw` play
 through their own wet layer in `PaperSurface.qml` (`scriptWet`), driven by a
 `FrameAnimation`, and are committed exactly as given.
+
+A phone's strokes arrive through `ink` (a stroke in progress, `liveWet` in `PaperSurface.qml`) and
+`erase` (sweeps into the draft, one undo step when final), next to `draw`. The bridge that sends them
+is run by `phoneBridge` in `Panel.qml` while Settings › Draw from a phone is on.
 
 Live checks worth doing after larger changes: draw a fast stroke and erase across it; type,
 move and delete a note; switch sheets, papers and sizes; dock the toolbar on each side and

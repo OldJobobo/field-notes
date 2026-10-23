@@ -1,0 +1,478 @@
+#!/usr/bin/env python3
+"""Desktop bridge between the Field Notes Android app and this plugin.
+
+Links every phone adb can see (`adb reverse localabstract:fieldnotes-bridge tcp:7741`), hands the
+phone's strokes and commands to `omarchy-shell jobo.field-notes`, and sends the open sheet back from the
+plugin's saved file. Field Notes starts it when Settings > Phone is on; `bridge/README.md` has the protocol.
+Standard library only.
+"""
+import argparse
+import hmac
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+PORT = 7741
+BUSY = 2  # exit code: the port is taken, most likely by another bridge
+TARGET = "jobo.field-notes"
+SOCKET = "localabstract:fieldnotes-bridge"
+APP = "com.wonderingsolutions.fieldnotes"  # the Android companion app
+SIZES = {"small": (520, 380), "medium": (760, 560), "large": (1040, 760)}
+MAX_VALUES = 2 * 8192  # numbers in one stroke: the most points Field Notes takes
+REACH = 5000  # no sheet is bigger than 1040 by 760; anything further out is not a point on it
+MAX_LINE = 1 << 20  # bytes in one line from a phone: a full stroke is about 100 KB
+STATE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+NOTES = STATE / "field-notes" / "notes.json"
+TOKEN = STATE / "fieldnotes-bridge" / "token"
+WIRELESS = STATE / "fieldnotes-bridge" / "wireless"  # ip:port of the Wi-Fi phones seen so far
+
+
+def find_adb():
+    """adb on PATH, or in the Android SDK."""
+    sdk = [Path(os.environ[v]) / "platform-tools/adb" for v in ("ANDROID_HOME", "ANDROID_SDK_ROOT") if v in os.environ]
+    found = [shutil.which("adb"), *sdk, Path.home() / "Android/Sdk/platform-tools/adb"]
+    return next((str(path) for path in found if path and Path(path).is_file()), None)
+
+
+def get_token():
+    """The pairing token, made on first use and kept for good."""
+    if not TOKEN.exists() or not TOKEN.read_text().strip():
+        TOKEN.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN.unlink(missing_ok=True)
+        with os.fdopen(os.open(TOKEN, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+            f.write(secrets.token_hex(16))
+    return TOKEN.read_text().strip()
+
+
+def pair(adb):
+    """Give the app on each phone adb lists (or on ANDROID_SERIAL) this desktop's token, which opens it."""
+    if adb is None:
+        print("adb not found: install android-tools")
+        return
+    token = get_token()
+    listing = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=15).stdout.splitlines()
+    serials = [row.split()[0] for row in listing[1:] if row.split()[1:] == ["device"]]
+    for serial in [os.environ["ANDROID_SERIAL"]] if os.environ.get("ANDROID_SERIAL") else serials:
+        done = subprocess.run([adb, "-s", serial, "shell", "am", "start", "-n", f"{APP}/.MainActivity", "--es", "token", token], capture_output=True, text=True, timeout=15)
+        print(f"{serial}: " + ("paired" if done.returncode == 0 and "Error" not in done.stdout else (done.stderr + done.stdout).strip()))
+    if not serials:
+        print("no phone listed by adb")
+
+
+def pick_carrier(current, options):
+    """Keep the link where it is while that adb connection lasts; otherwise prefer USB over Wi-Fi."""
+    return current if current in options else min(options, key=lambda s: (":" in s or s.startswith("adb-"), s))
+
+
+def is_number(value):
+    """A number within reach of a sheet. (Checked before isfinite, which raises on an integer too big for a float.)"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) <= REACH
+
+
+def numbers(value, pairs=False):
+    """A list of finite numbers (x y pairs if `pairs`), or None."""
+    ok = isinstance(value, list) and len(value) <= MAX_VALUES and all(is_number(v) for v in value)
+    return value if ok and (not pairs or len(value) % 2 == 0) else None
+
+
+def joined(values):
+    return " ".join(repr(float(v)) for v in values)
+
+
+def parse(line):
+    try:
+        value = json.loads(line)
+    except ValueError:
+        value = None
+    return value if isinstance(value, dict) else {}
+
+
+def sheet_message(doc, settled):
+    """The open sheet of a notes file, as the `sheet` message (see testdata/sheet.json)."""
+    sheets = doc["sheets"]
+    number = min(max(int(doc.get("current", 0)), 0), len(sheets) - 1)
+    sheet = sheets[number]
+    page = doc.get("page") or {}
+    width, height = SIZES.get(sheet.get("size"), (page.get("width", 760), page.get("height", 560)))
+    objects = []
+    for item in sheet.get("objects", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "stroke":
+            points = item.get("points")
+            flat = [v for p in points for v in p] if isinstance(points, list) and all(isinstance(p, list) and len(p) == 2 for p in points) else []
+            if len(flat) >= 2 and all(is_number(v) for v in flat):
+                objects.append({"type": "stroke", "width": item.get("width", 2.5), "points": flat})
+        elif item.get("type") == "text":
+            objects.append({
+                "type": "text", "x": item.get("x", 0), "y": item.get("y", 0),
+                "width": item.get("width", 0), "height": item.get("height", 0),
+                "text": item.get("text", ""), "size": item.get("size", 16),
+            })
+    return {
+        "t": "sheet", "settled": settled, "sheet": number + 1, "sheets": len(sheets),
+        "title": sheet.get("title", ""), "paper": sheet.get("paper", "graph"),
+        "width": width, "height": height, "penWidth": (doc.get("ui") or {}).get("penWidth", 2.5),
+        "objects": objects,
+    }
+
+
+class Client:
+    def __init__(self, conn):
+        self.conn = conn
+        self.lock = threading.Lock()
+        self.last = 0  # id of the newest command run for this phone
+        self.sent = None  # (file signature, last) of the sheet it has
+        self.ink = []  # the stroke being drawn, as far as the phone has said
+        self.ink_stale = False  # `ink` has points the plugin has not been shown
+        self.erase_tail = []  # the last point of the eraser's path so far
+    def send(self, message):
+        with self.lock:
+            self.conn.sendall((json.dumps(message, ensure_ascii=False) + "\n").encode())
+
+
+class Bridge:
+    def __init__(self, adb, shell, port):
+        self.adb = adb
+        self.shell = shell
+        self.port = port
+        self.token = get_token()
+        self.clients = []
+        self.clients_lock = threading.Lock()
+        self.shell_lock = threading.Lock()  # one call to the plugin at a time, so ink never lands after its stroke
+        self.wake = threading.Event()
+        self.ink_wake = threading.Event()
+        self.phones = {}  # phone -> "SM-T970 (USB)"
+        self.carrier = {}  # phone -> the adb serial that carries its link
+        self.field_notes_up = True
+        self.failing_since = None  # when `status` began to fail
+        self.why = ""  # what status() got instead of a status
+        self.reported = None
+
+    def report(self):
+        """One `status:` line whenever the state changes; Field Notes shows the last one in its settings."""
+        if self.adb is None:
+            text = "adb not found: install android-tools"
+        elif not self.field_notes_up:
+            text = "Field Notes is not responding"
+        elif self.phones:
+            text = "Linked: " + ", ".join(sorted(self.phones.values()))
+        else:
+            text = "Waiting for a phone"
+        if text != self.reported:
+            self.reported = text
+            print(f"status: {text}", flush=True)
+
+    # --- the plugin -------------------------------------------------------------------------
+
+    def call(self, args):
+        """One method of the plugin's scripting interface; its answer is "ok" or "error: ...". Hold shell_lock."""
+        try:
+            done = subprocess.run([self.shell, TARGET, *args], capture_output=True, text=True, timeout=5)
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            return f"error: {e}"
+        return done.stdout.strip() if done.returncode == 0 else f"error: {done.stderr.strip() or 'exit ' + str(done.returncode)}"
+
+    def status(self):
+        """The plugin's `status` as a dict, or None (the reason is in self.why)."""
+        with self.shell_lock:
+            out = self.call(["status"])
+        try:
+            self.why = ""
+            return json.loads(out)
+        except ValueError:
+            self.why = out
+            return None
+
+    def reachable(self, st):
+        """The plugin's IPC can stall a moment under load; `status` must fail for 5 s before Field Notes counts as down."""
+        now = time.monotonic()
+        if st is not None:
+            self.failing_since = None
+        elif self.failing_since is None:
+            self.failing_since = now
+        return self.failing_since is None or now - self.failing_since < 5
+
+    def signature(self):
+        try:
+            stat = NOTES.stat()
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return None
+
+    # --- phones -----------------------------------------------------------------------------
+
+    def run_adb(self, *args, serial=None, timeout=15):
+        command = [self.adb, *(["-s", serial] if serial else []), *args]
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+
+    def link_phones(self):
+        """Every 3 s: connect paired Wi-Fi phones, and keep one adb link per phone reversed to the bridge."""
+        names = {}  # adb serial -> (the phone's own serial number, its model), so USB and Wi-Fi of one phone count once
+        while self.adb:
+            try:
+                listing = self.run_adb("devices").stdout.splitlines()
+                serials = {row.split()[0] for row in listing[1:] if len(row.split()) == 2 and row.split()[1] == "device"}
+                self.connect_wireless(serials)
+                phones = {}
+                for serial in sorted(serials):
+                    if serial not in names:  # a phone that has only just come up may not answer yet; ask again next time
+                        props = [self.run_adb("shell", "getprop", p, serial=serial, timeout=5).stdout.strip() for p in ("ro.serialno", "ro.product.model")]
+                        if props[0]:
+                            names[serial] = (props[0], props[1] or props[0])
+                    if serial in names:
+                        phones.setdefault(names[serial][0], []).append(serial)
+                linked = {}
+                for phone, options in phones.items():
+                    self.carrier[phone] = pick_carrier(self.carrier.get(phone), options)
+                    serial = self.carrier[phone]
+                    if SOCKET in self.run_adb("reverse", "--list", serial=serial).stdout:
+                        linked[phone] = serial
+                    else:
+                        done = self.run_adb("reverse", SOCKET, f"tcp:{self.port}", serial=serial)
+                        print(f"linked {serial}" if done.returncode == 0 else f"could not link {serial}: {done.stderr.strip()}", flush=True)
+                        if done.returncode == 0:
+                            linked[phone] = serial
+                self.carrier = {phone: serial for phone, serial in self.carrier.items() if phone in phones}
+                how = lambda s: "Wi-Fi" if ":" in s or s.startswith("adb-") else "USB"
+                self.phones = {phone: f"{names[serial][1]} ({how(serial)})" for phone, serial in linked.items()}
+            except (OSError, subprocess.SubprocessError) as e:
+                print(f"adb: {e}", flush=True)
+            self.report()
+            time.sleep(3)
+
+    def unlink_phones(self):
+        """Take the reverse away on the way out: while it stands, whatever binds our port gets the app's token."""
+        for serial in set(self.carrier.values()):
+            try:
+                self.run_adb("reverse", "--remove", SOCKET, serial=serial, timeout=3)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+    def connect_wireless(self, serials):
+        """Reconnect the Wi-Fi phones this bridge has seen. adb never does it by itself, and mDNS is unreliable."""
+        address = r"\d+\.\d+\.\d+\.\d+:\d+"
+        known = {}  # host -> port; a phone's newest port replaces its old ones
+        if WIRELESS.exists():
+            known.update(a.rsplit(":", 1) for a in WIRELESS.read_text().split() if re.fullmatch(address, a))
+        for row in self.run_adb("mdns", "services").stdout.splitlines():
+            parts = row.split()
+            if len(parts) == 3 and parts[1] == "_adb-tls-connect._tcp" and re.fullmatch(address, parts[2]):
+                known.update([parts[2].rsplit(":", 1)])
+        known.update(s.rsplit(":", 1) for s in serials if re.fullmatch(address, s))
+        text = "".join(f"{host}:{port}\n" for host, port in sorted(known.items()))
+        if not WIRELESS.exists() or WIRELESS.read_text() != text:
+            WIRELESS.parent.mkdir(parents=True, exist_ok=True)
+            WIRELESS.write_text(text)
+        for host, port in sorted(known.items()):
+            if f"{host}:{port}" not in serials:
+                try:
+                    self.run_adb("connect", f"{host}:{port}", timeout=4)
+                except subprocess.TimeoutExpired:
+                    pass  # not reachable now; it must not hold up linking the phones that are
+
+    # --- one phone --------------------------------------------------------------------------
+
+    def serve(self, conn):
+        client = Client(conn)
+        try:
+            conn.settimeout(10)  # a phone must say hello
+            lines = conn.makefile("r", encoding="utf-8")
+            hello = parse(lines.readline(MAX_LINE))
+            given = hello.get("token")
+            if hello.get("t") == "hello" and isinstance(given, str) and hmac.compare_digest(given.encode(), self.token.encode()):
+                conn.settimeout(None)
+                with self.clients_lock:
+                    self.clients.append(client)
+                self.wake.set()
+                for line in iter(lambda: lines.readline(MAX_LINE), ""):
+                    if line.endswith("\n"):  # a longer line is not from the app
+                        self.command(client, parse(line))
+                    else:
+                        break
+            else:
+                client.send({"t": "unpaired"})
+        except (OSError, ValueError):
+            pass
+        finally:
+            with self.clients_lock:
+                if client in self.clients:
+                    self.clients.remove(client)
+            if client.ink:  # the phone went away mid-stroke
+                with self.shell_lock:
+                    self.call(["ink", ""])
+            conn.close()
+
+    def command(self, client, msg):
+        """Run one line from the phone. Commands carry an id; the phone's `settled` follows the newest."""
+        ident = msg.get("id")
+        with self.shell_lock:
+            try:
+                args = self.shell_args(client, msg)
+            except ValueError as e:
+                result = f"error: {e}"
+            else:
+                result = self.call(args) if args else "ok"
+        if isinstance(ident, int) and not isinstance(ident, bool):
+            if result.startswith("error"):
+                client.send({"t": "error", "id": ident, "message": result})
+            client.last = ident
+            self.wake.set()
+
+    def shell_args(self, client, msg):
+        """The plugin call for a line from the phone, or None when it only changes what the bridge holds."""
+        kind = msg.get("t")
+        points = numbers(msg.get("points"), pairs=True)
+        if kind == "ink" and points is not None:  # the stroke so far; ink_loop shows it
+            client.ink = (client.ink + points)[:MAX_VALUES] if points else []
+            client.ink_stale = True
+            self.ink_wake.set()
+            return None
+        if kind == "stroke" and points and len(points) >= 4:
+            client.ink, client.ink_stale = [], False  # the plugin drops its ink when it takes the stroke
+            return ["draw", joined(points), "0"]
+        if kind == "erase" and points is not None:
+            path = client.erase_tail + points
+            end = msg.get("end") is True
+            client.erase_tail = [] if end else path[-2:]
+            return ["erase", joined(path), "1" if end else "0"]
+        if kind in ("undo", "redo", "clear"):
+            return [kind]
+        if kind == "show":
+            return ["open"]
+        if kind == "new":
+            return ["newSheet"]
+        if kind == "select" and isinstance(msg.get("sheet"), int) and msg["sheet"] >= 1:
+            return ["selectSheet", str(msg["sheet"])]
+        if kind == "width" and is_number(msg.get("value")) and 1 <= msg["value"] <= 12:
+            return ["setPenWidth", repr(float(msg["value"]))]
+        if kind == "title" and isinstance(msg.get("text"), str):
+            return ["setTitle", " ".join(msg["text"].replace("\0", "").split())[:60]]
+        if kind == "note" and is_number(msg.get("x")) and is_number(msg.get("y")) and isinstance(msg.get("text"), str) and msg["text"].strip():
+            return ["addNote", repr(float(msg["x"])), repr(float(msg["y"])), msg["text"].replace("\0", "")[:4096].replace("\\", "\\\\").replace("\n", "\\n")]
+        raise ValueError(f"cannot run {kind}")
+
+    def ink_loop(self):
+        """Show each phone's stroke in progress on the desktop, as often as the plugin answers."""
+        while True:
+            self.ink_wake.wait()
+            self.ink_wake.clear()
+            with self.clients_lock:
+                clients = list(self.clients)
+            with self.shell_lock:
+                for client in clients:
+                    if client.ink_stale:
+                        client.ink_stale = False
+                        self.call(["ink", joined(client.ink)])
+
+    # --- the sheet and the desk -------------------------------------------------------------
+
+    def sync(self):
+        """Every 0.25 s: send the sheet to a phone whose copy is stale, once the plugin has saved, and desk every 2 s."""
+        next_desk = 0
+        while True:
+            self.wake.wait(0.25)
+            self.wake.clear()
+            with self.clients_lock:
+                clients = list(self.clients)
+            last = {c: c.last for c in clients}
+            stale = any(c.sent != (self.signature(), last[c]) for c in clients)
+            if stale or time.monotonic() >= next_desk:
+                st = self.status()
+                up = self.reachable(st)
+                if self.field_notes_up != up:
+                    self.field_notes_up = up
+                    self.report()
+                if time.monotonic() >= next_desk:
+                    next_desk = time.monotonic() + 2
+                    desk = {"t": "desk", "ok": up, "open": bool(st and st.get("open")), "saved": st.get("saved", "") if st else "", "message": self.why}
+                    self.broadcast(clients, desk)
+                if stale and st is not None and st.get("saved") == "SAVED" and not st.get("drawing"):
+                    self.push_sheets(clients, last)
+
+    def push_sheets(self, clients, last):
+        signature = self.signature()
+        try:
+            doc = json.loads(NOTES.read_text())
+            messages = {c: sheet_message(doc, last[c]) for c in clients if c.sent != (signature, last[c])}
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+            messages = {}
+            print(f"cannot read {NOTES}: {e!r}", flush=True)
+        for c, message in messages.items():
+            try:
+                c.send(message)
+                c.sent = (signature, last[c])
+            except OSError as e:
+                self.drop(c, e)
+
+    def broadcast(self, clients, message):
+        for c in clients:
+            try:
+                c.send(message)
+            except OSError as e:
+                self.drop(c, e)
+
+    def drop(self, client, why):
+        print(f"dropped a phone: {why}", flush=True)
+        try:
+            client.conn.shutdown(socket.SHUT_RDWR)  # close() alone leaves the reader's copy of the socket open
+        except OSError:
+            pass  # already gone
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--adb", default=find_adb())
+    parser.add_argument("--shell", default="omarchy-shell")
+    parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--token", action="store_true", help="print the pairing token and exit")
+    parser.add_argument("--pair", action="store_true", help="give the app on each phone adb lists the pairing token, and open it")
+    parser.add_argument("--exit-with-stdin", action="store_true", help="exit when stdin closes, so a parent's death ends the bridge")
+    args = parser.parse_args()
+
+    if args.token:
+        print(get_token())
+    elif args.pair:
+        pair(args.adb)
+    else:
+        bridge = Bridge(args.adb, args.shell, args.port)
+        server = socket.socket()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            server.bind(("127.0.0.1", args.port))
+        except OSError as e:
+            print(f"cannot listen on 127.0.0.1:{args.port}: {e} (is another bridge running?)", file=sys.stderr, flush=True)
+            raise SystemExit(BUSY)
+        server.listen()
+        print(f"listening on 127.0.0.1:{args.port}\nadb: {args.adb}", flush=True)
+        bridge.field_notes_up = bridge.status() is not None
+        print("Field Notes: " + ("running" if bridge.field_notes_up else f"not reachable ({bridge.why})"), flush=True)
+        bridge.report()
+        def leave(*_):
+            bridge.unlink_phones()
+            os._exit(0)
+
+        signal.signal(signal.SIGTERM, leave)
+        if args.exit_with_stdin:
+            threading.Thread(target=lambda: (sys.stdin.buffer.read(), leave()), daemon=True).start()
+        for target in (bridge.link_phones, bridge.sync, bridge.ink_loop):
+            threading.Thread(target=target, daemon=True).start()
+        try:
+            while True:
+                conn, _ = server.accept()
+                threading.Thread(target=bridge.serve, args=(conn,), daemon=True).start()
+        except KeyboardInterrupt:
+            bridge.unlink_phones()
+
+
+if __name__ == "__main__":
+    main()
