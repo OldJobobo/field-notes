@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.FieldNotes" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/desk</item>
+    </style>
+</resources>

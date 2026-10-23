@@ -28,6 +28,7 @@ no build step and no dependencies beyond the shell.
 | `Geometry.js` | Eraser cuts, hit testing, stroke simplification and mouse smoothing |
 | `Layout.js` | Board scaling, toolbar docking geometry, nearest-side snapping |
 | `bridge/` | The phone bridge (Python) and its tests; see `bridge/README.md` |
+| `android/` | The Android companion app (Kotlin, Gradle) and its tests; see `android/README.md` |
 | `tests/` | Node tests: unit tests for the JS modules and contract tests for the QML |
 
 ## How it fits together
@@ -135,11 +136,15 @@ always passed as arguments, never spliced into a shell command.
 
 ## Testing
 
+Run the Android build and its tests from a clone that is not the installed plugin folder: Omarchy reloads
+an installed plugin on every file change, and a Gradle build writes thousands of files.
+
 ```sh
 node --test tests/*.test.js     # unit and contract tests (Node 18+)
 qmlformat *.qml > /dev/null     # QML syntax check
 omarchy plugin validate .       # manifest check
 python3 -m unittest discover -s bridge   # the phone bridge (Python 3)
+(cd android && make test)                # the bridge again, then the app's tests and lint (JDK 17, Android SDK)
 ```
 
 - **Unit tests** cover the JavaScript modules: geometry, the document model (including

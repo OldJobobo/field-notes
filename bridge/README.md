@@ -3,7 +3,7 @@
 `fieldnotes-bridge` links Android devices to Field Notes. Field Notes starts it while
 **Settings › Draw from a phone** is on (`phoneBridge` in `Panel.qml`); you can also run it by hand
 (`python3 bridge/fieldnotes-bridge`, Ctrl+C stops it) as long as the setting is off.
-Standard library only.
+Standard library only. The Android app it talks to is in `../android`.
 
 ```text
  phone                                  desktop

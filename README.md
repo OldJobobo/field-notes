@@ -161,12 +161,15 @@ strokes: saved, undoable and exported like any other, and they appear on the des
 pen moves.
 
 You need Python 3 (Omarchy has it), `adb` (`sudo pacman -S android-tools`, or the Android SDK's
-platform-tools) and the companion app, Field Notes for Android, installed on the device with
-USB debugging on. Pair the app once with the desktop's token, by plugging the device in and running:
+platform-tools) and the companion app, Field Notes for Android (in [`android/`](android/README.md)), on the device with
+USB debugging on. To build, install and pair it, plug the device in and run, in `android/`:
 
 ```sh
-python3 ~/.config/omarchy/plugins/jobo.field-notes/bridge/fieldnotes-bridge --pair
+make run
 ```
+
+(That is `./gradlew installDebug` followed by `bridge/fieldnotes-bridge --pair`, which gives the app this
+desktop's token and opens it; see `android/README.md` for the requirements and the first run.)
 
 The line under the switch says what the bridge is doing:
 
