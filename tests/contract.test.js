@@ -233,6 +233,26 @@ test("toolbar docks to any paper side and is laid out from the dock geometry", (
   assert.match(tools, /tooltipSide: root\.tooltipSide/)
 })
 
+test("native pen pressure owns one gesture and uses the shared bounded renderer", () => {
+  const paper = read("PaperSurface.qml")
+  assert.match(paper, /device\.capabilities & PointerDevice\.Pressure/,
+    "zero pressure must not be confused with a device lacking pressure")
+  assert.match(paper, /acceptedButtons: Qt\.NoButton/,
+    "synthetic mouse events must not reset the native tablet point")
+  assert.match(paper, /if \(pointerKind\.penContact\)\s*return/,
+    "a synthesized press must not start a second stroke")
+  assert.match(paper, /root\.beginPenStroke\(point\)/)
+  assert.match(paper, /root\.finishGesture\(0, 0\)/,
+    "native release uses the captured contact samples, not release coordinates")
+  assert.match(paper, /if \(!editorPointer\.pressed && !root\.nativeStroke\)/,
+    "a native pen gesture does not require the MouseArea to be pressed")
+  assert.match(paper, /DocumentModel\.MAX_STROKE_POINTS/)
+  assert.match(paper, /Geometry\.simplifyStroke\(points, 0\.35\)/)
+  assert.match(paper, /Geometry\.pressurePath\(points\)/)
+  assert.match(paper, /Geometry\.pressureWidth\(width, Geometry\.pointPressure\(point\)\)/)
+  assert.match(paper, /tracePressureStroke\(ctx, points, width, color, padding\)/)
+})
+
 test("only mouse and touchpad strokes are smoothed, live and on commit alike", () => {
   const paper = read("PaperSurface.qml")
   assert.match(paper, /PointHandler\s*\{\s*id: pointerKind/)

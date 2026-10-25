@@ -39,6 +39,9 @@ Item {
     // already report smooth, precise positions and are kept exactly as drawn.
     property real mouseSmoothing: 3.5
     property bool steadyStroke: false
+    property bool pressureStroke: false
+    property bool nativeStroke: false
+    property bool strokeFull: false
     property string statusText: "READY"
     property var activeStroke: []
     // Script strokes waiting, the one being laid down, and how much of it shows.
@@ -168,7 +171,7 @@ Item {
         for (var i = 0; i < base.objects.length; i++) {
             var object = base.objects[i]
             if (object.type === "stroke") {
-                var radius = eraserRadius + Number(object.width || 1) / 2
+                var radius = eraserRadius + Geometry.strokeMaxWidth(object) / 2
                 if (!Geometry.strokeTouches(object.points, center, radius))
                     continue
                 var segments = Geometry.splitStroke(object.points, center, radius)
@@ -280,12 +283,61 @@ Item {
         return !device || device.type === PointerDevice.Mouse || device.type === PointerDevice.TouchPad
     }
 
+    function isPressureInput(device) {
+        return !!device && device.type !== PointerDevice.Mouse && device.type !== PointerDevice.TouchPad
+            && (device.capabilities & PointerDevice.Pressure) !== 0
+    }
+
+    function isPenInput(device) {
+        return !!device && (device.type === PointerDevice.Stylus || device.type === PointerDevice.Airbrush
+            || isPressureInput(device))
+    }
+
+    function beginPenStroke(point) {
+        if (editingObjectId !== "" || titleField.editing) {
+            editorPointer.forceActiveFocus()
+            return
+        }
+        if (gestureOrigin)
+            return
+        nativeStroke = true
+        pressureStroke = isPressureInput(point.device)
+        steadyStroke = false
+        strokeFull = false
+        gestureOrigin = [point.position.x, point.position.y]
+        activeStroke = pressureStroke
+            ? [[point.position.x, point.position.y, point.pressure]] : [[point.position.x, point.position.y]]
+        wet.requestPaint()
+    }
+
+    function appendPenPoint(point) {
+        var points = activeStroke
+        if (!points.length)
+            return
+        var last = points[points.length - 1]
+        // A pressure change matters even when the tip has barely moved.
+        if (Geometry.pointDistance(last, point) < 1.5
+                && (!pressureStroke || Math.abs(Geometry.pointPressure(last) - Geometry.pointPressure(point)) < 0.02))
+            return
+        if (points.length >= DocumentModel.MAX_STROKE_POINTS) {
+            if (!strokeFull)
+                refuse("Lift to start another stroke")
+            strokeFull = true
+            return
+        }
+        points.push(point)
+        activeStroke = points
+        wet.requestPaint()
+    }
+
     function finishGesture(x, y) {
         if (!gestureOrigin)
             return
         gestureOrigin = null
         if (currentTool === "pen" && activeStroke.length > 0) {
-            if (activeStroke.length === 1)
+            // A pen tap is a pressure-sized dot. Release is not another movement
+            // sample (its pressure is often zero, or its position has jumped).
+            if (activeStroke.length === 1 && !nativeStroke)
                 activeStroke.push([x + 0.1, y + 0.1])
             var points = strokePoints()
             var next = DocumentModel.addStroke(document, Geometry.simplifyStroke(points, 0.35), penWidth)
@@ -296,10 +348,14 @@ Item {
         } else if (draftDocument) {
             commit(draftDocument)
         }
+        pressureStroke = false
+        nativeStroke = false
     }
 
     function cancelGesture() {
         gestureOrigin = null
+        pressureStroke = false
+        nativeStroke = false
         clearWetInk()
         if (editingObjectId === "")
             draftDocument = null
@@ -362,9 +418,45 @@ Item {
         ctx.stroke()
     }
 
-    function traceStroke(ctx, points, width, color) {
+    function tracePressureStroke(ctx, points, width, color, padding) {
+        var path = Geometry.pressurePath(points)
+        ctx.fillStyle = color
+        ctx.beginPath()
+        var previousRadius = 0
+        for (var i = 0; i < path.length; i++) {
+            var point = path[i]
+            var radius = (Geometry.pressureWidth(width, Geometry.pointPressure(point)) + padding) / 2
+            if (i > 0) {
+                var previous = path[i - 1]
+                var distance = Geometry.pointDistance(previous, point)
+                if (distance > 0) {
+                    var nx = -(point[1] - previous[1]) / distance
+                    var ny = (point[0] - previous[0]) / distance
+                    // Tapered segments and round caps share one filled path, so
+                    // their overlaps do not darken the stroke or selection halo.
+                    ctx.moveTo(previous[0] + nx * previousRadius, previous[1] + ny * previousRadius)
+                    ctx.lineTo(point[0] + nx * radius, point[1] + ny * radius)
+                    ctx.lineTo(point[0] - nx * radius, point[1] - ny * radius)
+                    ctx.lineTo(previous[0] - nx * previousRadius, previous[1] - ny * previousRadius)
+                    ctx.closePath()
+                }
+            }
+            ctx.moveTo(point[0] + radius, point[1])
+            ctx.arc(point[0], point[1], radius, 0, Math.PI * 2)
+            previousRadius = radius
+        }
+        ctx.fill()
+    }
+
+    function traceStroke(ctx, points, width, color, padding) {
         if (!points || points.length === 0)
             return
+        padding = padding || 0
+        if (Geometry.hasPressure(points)) {
+            tracePressureStroke(ctx, points, width, color, padding)
+            return
+        }
+        width += padding
         ctx.strokeStyle = color
         ctx.fillStyle = color
         ctx.lineWidth = width
@@ -413,6 +505,14 @@ Item {
         }
     }
     onSelectedObjectIdChanged: ink.requestPaint()
+    onEnabledChanged: {
+        if (!enabled && nativeStroke)
+            cancelGesture()
+    }
+    onVisibleChanged: {
+        if (!visible && nativeStroke)
+            cancelGesture()
+    }
     onCurrentToolChanged: {
         cancelGesture()
         selectedObjectId = ""
@@ -501,12 +601,12 @@ Item {
                     if (objects[i].type !== "stroke")
                         continue
                     if (objects[i].id === root.selectedObjectId)
-                        root.traceStroke(ctx, objects[i].points, (objects[i].width || 2.5) + 7, halo)
+                        root.traceStroke(ctx, objects[i].points, objects[i].width || 2.5, halo, 7)
                     root.traceStroke(ctx, objects[i].points, objects[i].width || 2.5, root.graphite)
                 }
             }
             onPainted: {
-                if (!editorPointer.pressed)
+                if (!editorPointer.pressed && !root.nativeStroke)
                     root.clearWetInk()
                 if (root.scriptCommitted)
                     root.finishScriptStroke()
@@ -604,6 +704,10 @@ Item {
                 : Qt.ArrowCursor
 
             onPressed: function(mouse) {
+                // Native pen input owns its gesture; a synthesized mouse press
+                // must not start another stroke or replace its pressure samples.
+                if (pointerKind.penContact)
+                    return
                 if (root.editingObjectId !== "" || titleField.editing) {
                     editorPointer.forceActiveFocus()
                     mouse.accepted = true
@@ -612,6 +716,8 @@ Item {
                 root.gestureOrigin = [mouse.x, mouse.y]
                 if (root.currentTool === "pen") {
                     root.steadyStroke = root.isSteadyInput(mouse)
+                    root.pressureStroke = false
+                    root.strokeFull = false
                     root.activeStroke = [[mouse.x, mouse.y]]
                     wet.requestPaint()
                 } else if (root.currentTool === "eraser") {
@@ -638,12 +744,10 @@ Item {
                     root.eraseAlong(root.gestureOrigin, point)
                     root.gestureOrigin = point
                 } else if (root.currentTool === "pen") {
-                    var points = root.activeStroke
-                    if (points.length > 0 && Geometry.pointDistance(points[points.length - 1], point) >= 1.5) {
-                        points.push(point)
-                        root.activeStroke = points
-                        wet.requestPaint()
-                    }
+                    // Pressure strokes are sampled from authentic pointer events
+                    // below; their synthesized mouse moves must not add duplicates.
+                    if (!pointerKind.penContact)
+                        root.appendPenPoint(point)
                 } else if (root.currentTool === "select") {
                     if (!root.draftDocument && Geometry.pointDistance(root.gestureOrigin, point) < 3)
                         return
@@ -653,16 +757,56 @@ Item {
             }
 
             onReleased: function(mouse) {
-                root.finishGesture(mouse.x, mouse.y)
+                if (!pointerKind.penContact)
+                    root.finishGesture(mouse.x, mouse.y)
             }
 
-            onCanceled: root.cancelGesture()
+            onCanceled: {
+                if (!pointerKind.penContact)
+                    root.cancelGesture()
+            }
 
-            // Passive: only reports which kind of device pressed, before onPressed runs.
+            // Observe device type for mouse smoothing, and handle native pen
+            // gestures without relying on tablet-to-mouse event synthesis.
             PointHandler {
                 id: pointerKind
 
+                property bool contactSeen: false
+                property bool penContact: false
                 target: null
+                // Synthetic mouse events must not reset the authentic pen point.
+                acceptedButtons: Qt.NoButton
+                onPointChanged: {
+                    // Release updates the point after deactivating. Cancellation
+                    // also deactivates, but onCanceled discards it before reset.
+                    if (!active) {
+                        if (penContact && root.nativeStroke) {
+                            if (enabled && root.enabled && root.visible)
+                                root.finishGesture(0, 0) // last contact sample, not release coordinates/pressure
+                            else
+                                root.cancelGesture()
+                        }
+                        contactSeen = false
+                        penContact = false
+                        return
+                    }
+                    if (!contactSeen) {
+                        contactSeen = true
+                        penContact = root.currentTool === "pen" && root.isPenInput(point.device)
+                            && ((point.pressedButtons & Qt.LeftButton) !== 0 || point.device.type === PointerDevice.TouchScreen)
+                        if (penContact)
+                            root.beginPenStroke(point)
+                    } else if (penContact && root.nativeStroke && root.gestureOrigin) {
+                        root.appendPenPoint(root.pressureStroke
+                            ? [point.position.x, point.position.y, point.pressure] : [point.position.x, point.position.y])
+                    }
+                }
+                onCanceled: {
+                    if (penContact)
+                        root.cancelGesture()
+                    contactSeen = false
+                    penContact = false
+                }
             }
         }
 
