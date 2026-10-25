@@ -311,13 +311,15 @@ test("sheets resize between three sizes without cutting off or rescaling content
 
 test("settings load with safe defaults and keep only valid values", () => {
   assert.deepEqual(Model.defaultSettings(), {
-    exportDir: "", theme: true, tilt: true, fadeToolbar: true, smoothing: "medium", eraser: "medium", clipboard: "path"
+    exportDir: "", theme: true, tilt: true, fadeToolbar: true, phoneSync: false, smoothing: "medium", eraser: "medium", clipboard: "path"
   }, "defaults match how Field Notes behaves with nothing saved")
   assert.deepEqual(Model.sanitizeSettings(null), Model.defaultSettings())
   assert.deepEqual(Model.sanitizeSettings({
     theme: false, tilt: "yes", smoothing: "strong", eraser: "huge", clipboard: "image",
     exportDir: "  ~/Notes/out\nrm -rf /  ", extra: 1
-  }), { exportDir: "~/Notes/outrm -rf /", theme: false, tilt: true, fadeToolbar: true, smoothing: "strong", eraser: "medium", clipboard: "image" })
+  }), { exportDir: "~/Notes/outrm -rf /", theme: false, tilt: true, fadeToolbar: true, phoneSync: false, smoothing: "strong", eraser: "medium", clipboard: "image" })
+  assert.equal(Model.sanitizeSettings({ phoneSync: true }).phoneSync, true)
+  assert.equal(Model.sanitizeSettings({ phoneSync: "yes" }).phoneSync, false, "the phone bridge starts only on an explicit true")
   assert.equal(Model.sanitizeSettings({ exportDir: "x".repeat(900) }).exportDir.length, 512)
   assert.equal(Model.sanitizeSettings({ exportDir: 42 }).exportDir, "")
 
