@@ -48,6 +48,29 @@ ends. Pen strokes draw on a separate "wet" canvas and are committed on release, 
 input is smoothed (`Geometry.smoothStroke`) and simplified (`Geometry.simplifyStroke`).
 The same smoothing runs for the live stroke, once per frame, so nothing moves on release.
 
+**Basic pressure.** `MouseArea` owns mouse drawing and the existing editing tools; the passive
+`PointHandler` owns native pen drawing, including pens without pressure. Synthetic mouse
+events from that pen cannot start a second stroke. `acceptedButtons: Qt.NoButton` prevents
+those synthetic events from resetting the authentic handler point. Only devices advertising
+Qt's `Pressure` capability (excluding mice and touchpads) supply pressure samples. Hover
+never starts ink; a release finishes at the last contact sample, not its often-zero pressure
+or displaced coordinates. Pressure changes of at least 0.02 are captured even without
+movement. Live capture is bounded to 8,192 samples; a full stroke asks the user to lift.
+
+Pressure affects width only: `selectedWidth * (0.30 + 0.80 * Math.pow(pressure, 1.8))`.
+The range is 30–110% of the nominal selected width: finer light contact and a modest
+firm-press boost, while retaining the gentle 1.8 response. Strokes without pressure
+metadata stay at the nominal width. Sheet bounds and selection/eraser envelopes include
+the boosted maximum; sizing regressions keep the model and renderer consistent. There
+is no opacity accumulation, tilt, or brush engine.
+Pressure-aware simplification preserves width changes along straight lines and uses a
+linear work budget, retaining the original bounded samples if RDP would become quadratic.
+The renderer
+flattens the existing midpoint quadratics with bounded subdivision and fills tapered
+segments with round caps as one path (consistent winding avoids holes at overlapping caps).
+Wet ink, committed ink, selection, and PNG capture use the same renderer. Stationary
+pressure changes retain their caps so easing off cannot shrink an already-drawn dot.
+
 **Keyboard focus.** Shortcuts are handled on the panel's focus scope. Focus is handed back
 with `Panel.focusKeys()`, which focuses a plain `keySink` item; that also commits any note
 or title being edited (they commit when they lose focus).
@@ -101,6 +124,14 @@ always passed as arguments, never spliced into a shell command.
 ```
 
 - Coordinates are in the sheet's own space: small 520×380, medium 760×560, large 1040×760.
+- A stroke point is `[x, y]` for fixed width, or `[x, y, pressure]` for pressure input.
+  Pressure is a finite number clamped to 0–1 and rounded to three decimal places. Missing
+  or malformed pressure keeps legacy strokes fixed-width; within a mixed pressure stroke,
+  missing samples represent firm contact. A valid zero means light contact, not missing
+  data. Moving preserves pressure; eraser cut points interpolate it. This is an
+  additive extension to schema 2 (and the schema 1 reader), not a schema bump. Old notes
+  remain unchanged. Versions predating pressure support display these strokes at constant
+  width and **discard pressure if they save the notebook again**.
 - `ui.boards` is where the board was left on each monitor, by output name, in that monitor's
   pixels (at most 16; anything else is dropped). `boardX`/`boardY` repeat the open monitor's
   place for older versions, and a file with only those uses them for the first monitor opened.
@@ -145,6 +176,26 @@ omarchy plugin validate .       # manifest check
 - **Contract tests** (`tests/contract.test.js`) read the QML source and pin down behaviour
   that is easy to break silently: wiring between components, focus handling, input masks,
   stacking order, theme coverage. Each assertion's message says what it protects.
+
+### Optional pressure input/render smoke test
+
+With Qt 6 Quick/Test development packages, `pkg-config`, and a C++ compiler available:
+
+```sh
+c++ -std=c++17 -fPIC tests/pressure-input.cpp -o /tmp/field-notes-pressure-input \
+  $(pkg-config --cflags --libs Qt6Quick Qt6Test)
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+  /tmp/field-notes-pressure-input "$PWD/tests/PressureHarness.qml"
+```
+
+This runs the real `PaperSurface.qml` in an isolated window with synthetic native tablet
+and mouse events. It checks pressure capture, duplicate mouse suppression, live/committed
+pixels, connected tapered segments, PNG export, stationary pressure, zero versus absent
+pressure, pen fallback, transformed coordinates, cancellation, point limits, and ordinary
+mouse drawing. The fixture disables shadows for Qt's software renderer; it does not load
+Quickshell, read/write notes, or change the running desktop. This optional C++ test is not
+an application build step or a runtime dependency. Physical tablet feel and compositor
+input delivery still need a hands-on check on the target desktop.
 
 ### Rendering components without the shell
 

@@ -94,10 +94,14 @@ Hover any button for its name and shortcut. Dimmed buttons have nothing to do ri
 
 ## Drawing and writing
 
-- **Pen** — strokes from a mouse or touchpad are steadied as you draw: pixel stair-steps
-  and hand wobble are smoothed away while sharp corners and the stroke's ends stay exactly
-  where you put them. Pen tablets are left exactly as drawn. The strength is adjustable in
-  settings.
+- **Pen** — a pressure-capable pen automatically makes lighter or firmer marks: pressure
+  changes width only, from a fine line to a little beyond the width you chose. Color and
+  opacity stay the same; there are
+  no extra brush controls. A mouse or a pen without pressure draws at the chosen width.
+  Strokes from a mouse or touchpad are steadied as you draw: pixel stair-steps and hand
+  wobble are smoothed away while sharp corners and the stroke's ends stay exactly where
+  you put them. Tablet input is not steadied. The mouse smoothing strength is adjustable
+  in settings.
 - **Eraser** — cuts strokes cleanly at the edge of the eraser ring, however fast you move,
   and removes any note it touches. One drag is one undo step.
 - **Notes** — with Text, click empty paper and type. `Enter` starts a new line,
@@ -264,6 +268,14 @@ the safety checks below, or Field Notes could not copy it aside (`notes.json.cor
 
 **My tablet strokes look smoothed.** Your tablet is reporting itself as a mouse. Set
 **Mouse smoothing** to **Off** in settings.
+
+**My pen has no pressure response.** Field Notes uses the pressure your device and desktop
+report to Qt. A tablet configured to emulate only a mouse cannot provide pressure to the
+notes; it still draws at the chosen width. Existing strokes keep the width they were drawn
+with — pressure applies to new pen strokes, not old notes or scripted drawing.
+
+**It says "Lift to start another stroke".** One continuous stroke has reached its
+8,192-sample limit. Lift and draw again; the stroke you just drew is kept.
 
 **A sheet won't get smaller.** Something on it reaches past the smaller size. Move or erase
 it first.
