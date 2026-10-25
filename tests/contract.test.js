@@ -405,7 +405,7 @@ test("a settings panel opens from the toolbar or Ctrl+, and every setting does s
   assert.match(panel, /settings = restored\.settings/)
   assert.match(panel, /onSettingsChanged: scheduleSave\(\)/)
 
-  for (const key of ["theme", "fadeToolbar", "tilt", "smoothing", "eraser", "clipboard", "exportDir"])
+  for (const key of ["theme", "fadeToolbar", "tilt", "smoothing", "eraser", "clipboard", "exportDir", "phoneSync"])
     assert.match(card, new RegExp(`settingChanged\\("${key}"`), `the card offers ${key}`)
   assert.match(card, /toolbarSideRequested\(value\)/)
   assert.match(panel, /tilted: root\.settings\.tilt/)
@@ -523,6 +523,26 @@ test("the scripting interface is documented and draws through its own wet layer"
   assert.match(paper, /DocumentModel\.addStroke\(document, stroke\.points, stroke\.width\)/,
     "script strokes are committed exactly as given, never smoothed")
   assert.match(paper, /id: scriptHandoff/, "the queue moves on even if the ink layer never paints")
+})
+
+test("the phone bridge runs only while Settings > Phone is on, and never outlives the shell", () => {
+  const panel = read("Panel.qml")
+  const paper = read("PaperSurface.qml")
+  const bridge = panel.slice(panel.indexOf("id: phoneBridge"))
+  assert.match(panel, /readonly property bool phoneWanted: stateReady && settings\.phoneSync === true/,
+    "nothing starts before the saved settings are read")
+  assert.match(panel, /onPhoneWantedChanged: \{[\s\S]*?phoneBridge\.running = phoneWanted/)
+  assert.match(bridge, /bridge\/fieldnotes-bridge/)
+  assert.match(bridge, /"--exit-with-stdin"/, "the bridge ends when the shell's end of its stdin closes")
+  assert.match(bridge, /stdinEnabled: true/, "without it stdin is closed at once and the bridge would exit at once")
+  assert.match(bridge, /exitCode === 2 \? "Another bridge is already running"/)
+  assert.match(bridge, /line\.indexOf\("status: "\) === 0/, "the settings row shows the bridge's last status line")
+  assert.match(panel, /phoneStatus: root\.phoneStatus/)
+  assert.match(paper, /id: liveWet/, "a phone's stroke in progress has a layer of its own")
+  assert.match(paper, /id: liveInkExpiry/, "a phone that vanishes mid-stroke leaves nothing on the paper")
+  assert.match(paper, /showLiveInk\(\[\]\) \/\/ the stroke takes over/, "ink is handed over to the stroke without a gap")
+  assert.match(panel, /focusKeys\(\) \/\/ commits a note being typed/, "a phone's stroke never takes a note being typed with it")
+  assert.match(panel, /function scriptErase[\s\S]*?focusKeys\(\)\n        paper\.eraseScript/, "nor does its eraser")
 })
 
 test("Open folder launches the file manager detached, like Omarchy, preferring gio", () => {

@@ -51,6 +51,8 @@ Item {
     property real scriptElapsed: 0
     property bool scriptCommitted: false
     readonly property int scriptPending: scriptQueue.length + (scriptStroke ? 1 : 0)
+    // The stroke a phone is drawing right now, until the phone lifts the pen or goes quiet.
+    property var liveInk: []
     property var gestureOrigin: null
     property string selectedObjectId: ""
     property string editingObjectId: ""
@@ -211,6 +213,7 @@ Item {
         }
         var stroke = scriptQueue[0]
         scriptQueue = scriptQueue.slice(1)
+        showLiveInk([]) // the stroke takes over from the phone's live ink
         var lengths = [0]
         for (var i = 1; i < stroke.points.length; i++)
             lengths.push(lengths[i - 1] + Geometry.pointDistance(stroke.points[i - 1], stroke.points[i]))
@@ -270,6 +273,32 @@ Item {
         scriptInk = []
         scriptStroke = null
         scriptWet.requestPaint()
+    }
+
+    // The stroke a phone is still drawing (Panel's `ink`), on a layer of its own.
+    function showLiveInk(points) {
+        liveInk = points
+        liveWet.requestPaint()
+        if (points.length > 0)
+            liveInkExpiry.restart()
+        else
+            liveInkExpiry.stop()
+    }
+
+    // A phone's eraser (Panel's `erase`): each sweep shows at once as the draft, and the whole
+    // path is one undo step once the phone lifts, or goes quiet.
+    function eraseScript(points, final) {
+        if (points.length === 1)
+            eraseAt(points[0][0], points[0][1])
+        for (var i = 1; i < points.length; i++)
+            eraseAlong(points[i - 1], points[i])
+        if (!final) {
+            scriptEraseExpiry.restart()
+        } else {
+            scriptEraseExpiry.stop()
+            if (draftDocument)
+                commit(draftDocument)
+        }
     }
 
     function strokePoints() {
@@ -625,6 +654,38 @@ Item {
                 ctx.reset()
                 if (root.scriptStroke)
                     root.traceStroke(ctx, root.scriptInk, root.scriptStroke.width, root.graphite)
+            }
+        }
+
+        // A stroke a phone is still drawing.
+        Canvas {
+            id: liveWet
+
+            anchors.fill: parent
+            antialiasing: true
+
+            onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                root.traceStroke(ctx, root.liveInk, root.penWidth, root.graphite)
+            }
+        }
+
+        // A phone that vanishes mid-stroke or mid-erase leaves nothing stuck on the paper.
+        Timer {
+            id: liveInkExpiry
+
+            interval: 5000
+            onTriggered: root.showLiveInk([])
+        }
+
+        Timer {
+            id: scriptEraseExpiry
+
+            interval: 5000
+            onTriggered: {
+                if (root.draftDocument && root.editingObjectId === "")
+                    root.commit(root.draftDocument)
             }
         }
 

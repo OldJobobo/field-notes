@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 2,
+  "page": { "width": 760, "height": 560 },
+  "current": 1,
+  "sheets": [
+    {
+      "title": "",
+      "size": "medium",
+      "paper": "graph",
+      "objects": [
+        { "id": "stroke-1", "type": "stroke", "color": "graphite", "width": 2.5, "points": [[10, 20], [30, 40]] }
+      ]
+    },
+    {
+      "title": "Meeting notes",
+      "size": "large",
+      "paper": "ruled",
+      "objects": [
+        { "id": "stroke-1", "type": "stroke", "color": "graphite", "width": 2.5, "points": [[90, 140], [200.5, 110.3], [262, 40.6]] },
+        { "id": "text-1", "type": "text", "x": 90, "y": 200, "width": 220, "height": 40, "text": "Call back\nÁgua — 5 €", "size": 16 },
+        { "id": "stroke-2", "type": "stroke", "color": "graphite", "width": 7, "points": [[500.1, 600.9]] },
+        { "id": "sticker-1", "type": "sticker", "x": 1, "y": 2 },
+        { "id": "stroke-3", "type": "stroke", "color": "graphite", "width": 1.5, "points": [[1, 2], ["x", 3]] },
+        { "id": "text-2", "type": "text", "x": 300, "y": 400, "width": 220, "height": 28, "text": "no size given" }
+      ]
+    }
+  ],
+  "ui": { "tool": "pen", "penWidth": 4, "toolbar": "right", "boardX": 994, "boardY": 431 },
+  "settings": { "theme": true }
+}
