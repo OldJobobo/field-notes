@@ -15,8 +15,79 @@ function segmentDistance(point, start, end) {
     return pointDistance(point, [Number(start[0]) + t * vx, Number(start[1]) + t * vy])
 }
 
+function hasPointPressure(point) {
+    return point && typeof point[2] === "number" && isFinite(point[2])
+}
+
+function hasPressure(points) {
+    return points.some(hasPointPressure)
+}
+
+// Missing samples inside a pressure stroke represent firm contact, not zero.
+// Entire strokes without pressure metadata use the separate fixed-width path.
+function pointPressure(point) {
+    return hasPointPressure(point) ? Math.max(0, Math.min(1, point[2])) : 1
+}
+
+function copyPoint(point) {
+    var copy = [Number(point[0]), Number(point[1])]
+    if (hasPointPressure(point))
+        copy.push(pointPressure(point))
+    return copy
+}
+
+// A modest, fixed response: 30–110% of the nominal selected width. Missing
+// pressure remains fixed-width. No opacity, velocity, tilt, or brush behavior.
+function pressureWidth(width, pressure) {
+    if (typeof pressure !== "number" || !isFinite(pressure))
+        return width
+    var p = Math.max(0, Math.min(1, pressure))
+    return width * (0.30 + 0.80 * Math.pow(p, 1.8))
+}
+
+// A conservative envelope for selection and erasing, including the firm-press boost.
+function strokeMaxWidth(stroke) {
+    var width = Number(stroke.width || 1)
+    return hasPressure(stroke.points || []) ? pressureWidth(width, 1) : width
+}
+
 function lerp(a, b, t) {
-    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+    var point = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+    if (hasPointPressure(a) || hasPointPressure(b))
+        point.push(pointPressure(a) + (pointPressure(b) - pointPressure(a)) * t)
+    return point
+}
+
+// Flatten the same midpoint quadratics as the fixed-width Canvas path, carrying
+// pressure with position. Bounded subdivision avoids unbounded work on sparse input.
+function pressurePath(points) {
+    if (!points.length)
+        return []
+    var path = [copyPoint(points[0])]
+    function curve(a, control, b, depth) {
+        var left = lerp(a, control, 0.5)
+        var right = lerp(control, b, 0.5)
+        var middle = lerp(left, right, 0.5)
+        var chord = lerp(a, b, 0.5)
+        if (depth >= 6 || (pointDistance(middle, chord) <= 0.25
+                && Math.abs(pointPressure(middle) - pointPressure(chord)) <= 0.01)) {
+            path.push(copyPoint(b))
+            return
+        }
+        curve(a, left, middle, depth + 1)
+        curve(middle, right, b, depth + 1)
+    }
+    for (var i = 1; i < points.length - 1; i++) {
+        // A held tip can change pressure repeatedly. Keep those caps intact so
+        // easing off cannot shrink a wider dot that was already laid down.
+        if (pointDistance(path[path.length - 1], points[i]) === 0 || pointDistance(points[i], points[i + 1]) === 0)
+            path.push(copyPoint(points[i]))
+        else
+            curve(path[path.length - 1], points[i], lerp(points[i], points[i + 1], 0.5), 0)
+    }
+    if (points.length > 1)
+        path.push(copyPoint(points[points.length - 1]))
+    return path
 }
 
 // Parameter range [t0, t1] of segment a→b that lies inside the circle, or null.
@@ -56,8 +127,8 @@ function splitStroke(points, center, radius) {
 
     function push(point) {
         var last = current[current.length - 1]
-        if (!last || last[0] !== point[0] || last[1] !== point[1])
-            current.push([point[0], point[1]])
+        if (!last || last[0] !== point[0] || last[1] !== point[1] || pointPressure(last) !== pointPressure(point))
+            current.push(copyPoint(point))
     }
     function flush() {
         if (current.length > 1 && strokeLength(current) >= 0.75)
@@ -66,11 +137,11 @@ function splitStroke(points, center, radius) {
     }
 
     if (points.length === 1)
-        return pointDistance(points[0], center) > radius ? [[[points[0][0], points[0][1]]]] : []
+        return pointDistance(points[0], center) > radius ? [[copyPoint(points[0])]] : []
 
     for (var i = 0; i + 1 < points.length; i++) {
-        var a = [Number(points[i][0]), Number(points[i][1])]
-        var b = [Number(points[i + 1][0]), Number(points[i + 1][1])]
+        var a = copyPoint(points[i])
+        var b = copyPoint(points[i + 1])
         var span = circleSpan(a, b, center, radius)
         if (!span) {
             push(a)
@@ -86,7 +157,7 @@ function splitStroke(points, center, radius) {
     }
     var last = points[points.length - 1]
     if (pointDistance(last, center) > radius)
-        push([Number(last[0]), Number(last[1])])
+        push(copyPoint(last))
     flush()
     return segments
 }
@@ -117,29 +188,46 @@ function hitTest(objects, point, tolerance) {
             if (rectTouches(object, point, 0))
                 return object.id
         } else if (object.type === "stroke") {
-            if (strokeTouches(object.points, point, Number(tolerance) + Number(object.width || 1) / 2))
+            if (strokeTouches(object.points, point, Number(tolerance) + strokeMaxWidth(object) / 2))
                 return object.id
         }
     }
     return ""
 }
 
-// Ramer–Douglas–Peucker: drops points that deviate less than `tolerance` from the line.
+// Ramer–Douglas–Peucker, preserving pressure changes too. A straight line can
+// still contain a thin -> thick -> thin profile that must not collapse to its ends.
 function simplifyStroke(points, tolerance) {
     if (points.length <= 2)
         return points.slice()
+    var pressure = hasPressure(points)
+    // RDP can be quadratic on alternating pressure. Keep the original samples
+    // rather than stall on release; live capture already bounds their count.
+    var work = points.length * 16
     var keep = new Array(points.length)
     keep[0] = keep[points.length - 1] = true
     var stack = [[0, points.length - 1]]
     while (stack.length) {
         var range = stack.pop()
+        var a = points[range[0]], b = points[range[1]]
+        var dx = b[0] - a[0], dy = b[1] - a[1]
+        var span = dx * dx + dy * dy
         var farthest = -1
-        var farthestDistance = tolerance
+        var farthestError = 1
         for (var i = range[0] + 1; i < range[1]; i++) {
-            var distance = segmentDistance(points[i], points[range[0]], points[range[1]])
-            if (distance > farthestDistance) {
+            if (pressure && --work < 0)
+                return points.slice()
+            var error = segmentDistance(points[i], a, b) / Math.max(1e-9, tolerance)
+            if (pressure) {
+                var t = span > 0 ? Math.max(0, Math.min(1,
+                    ((points[i][0] - a[0]) * dx + (points[i][1] - a[1]) * dy) / span))
+                    : (i - range[0]) / (range[1] - range[0])
+                var expected = pointPressure(a) + (pointPressure(b) - pointPressure(a)) * t
+                error = Math.max(error, Math.abs(pointPressure(points[i]) - expected) / 0.02)
+            }
+            if (error > farthestError) {
                 farthest = i
-                farthestDistance = distance
+                farthestError = error
             }
         }
         if (farthest >= 0) {
@@ -236,6 +324,12 @@ function smoothStroke(points, sigma) {
 if (typeof module !== "undefined")
     module.exports = {
         smoothStroke: smoothStroke,
+        hasPressure: hasPressure,
+        pointPressure: pointPressure,
+        pressureWidth: pressureWidth,
+        strokeMaxWidth: strokeMaxWidth,
+        pressurePath: pressurePath,
+        lerp: lerp,
         pointDistance: pointDistance,
         segmentDistance: segmentDistance,
         splitStroke: splitStroke,

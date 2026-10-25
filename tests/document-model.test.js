@@ -29,6 +29,70 @@ test("adds an immutable clamped stroke with a unique id", () => {
   assert.equal(second.objects[1].id, "stroke-2")
 })
 
+test("stores bounded optional pressure without changing legacy points", () => {
+  const points = [[1, 2, 0], [3, 4, 0.123456], [5, 6, -1], [7, 8, 2],
+    [9, 10], [11, 12, null], [13, 14, "0.5"], [15, 16, NaN], [17, 18, Infinity]]
+  const document = Model.addStroke(Model.createDocument(760, 560), points, 4)
+  assert.deepEqual(document.objects[0].points, [[1, 2, 0], [3, 4, 0.123], [5, 6, 0], [7, 8, 1],
+    [9, 10], [11, 12], [13, 14], [15, 16], [17, 18]])
+  assert.equal(points[1][2], 0.123456, "input samples are not mutated")
+  assert.equal(document.objects[0].width, 4, "width stores the nominal selected size")
+  assert.equal(Model.MAX_STROKE_POINTS, 8192)
+})
+
+test("pressure survives erase, move, undo, redo, and save/load", () => {
+  const Geometry = require("../Geometry.js")
+  const History = require("../History.js")
+  const empty = Model.createDocument(760, 560)
+  const original = Model.addStroke(empty, [[10, 20, 0], [110, 20, 1]], 4)
+  const segments = Geometry.splitStroke(original.objects[0].points, [60, 20], 10)
+  const erased = Model.replaceStrokeSegments(original, "stroke-1", segments)
+  assert.deepEqual(erased.objects.map(object => object.points), [
+    [[10, 20, 0], [50, 20, 0.4]], [[70, 20, 0.6], [110, 20, 1]]
+  ])
+  const moved = Model.translateObject(erased, "stroke-1", 5, 7)
+  assert.deepEqual(moved.objects[0].points, [[15, 27, 0], [55, 27, 0.4]])
+  assert.deepEqual(original.objects[0].points, [[10, 20, 0], [110, 20, 1]])
+  let history = History.commit(History.create(original), moved)
+  history = History.undo(history)
+  assert.equal(history.present, original)
+  history = History.redo(history)
+  assert.equal(history.present, moved)
+  const restored = Model.sanitizeNotebook(JSON.parse(Model.serialize([history.present], 0, {})), 760, 560)
+  assert.deepEqual(restored.documents[0].objects, moved.objects)
+  assert.equal(restored.trimmed, false)
+})
+
+test("loading pressure is additive for both saved schemas and rejects malformed values", () => {
+  const object = { id: "stroke-1", type: "stroke", width: 3,
+    points: [[1, 2, 0], [3, 4, 0.75], [5, 6, 1], [7, 8], [9, 10, null], [11, 12, "0.5"]] }
+  for (const raw of [{ schemaVersion: 1, objects: [object] },
+    { schemaVersion: 2, sheets: [{ objects: [object] }] }]) {
+    const restored = Model.sanitizeNotebook(raw, 760, 560)
+    assert.deepEqual(restored.documents[0].objects[0].points,
+      [[1, 2, 0], [3, 4, 0.75], [5, 6, 1], [7, 8], [9, 10], [11, 12]])
+    assert.equal(restored.trimmed, false)
+  }
+})
+
+test("pressure parsing remains safe for malformed and sparse point entries", () => {
+  const object = { id: "stroke-1", type: "stroke", width: 3,
+    points: [null, false, 0, undefined, {}, [], [10, 20, 0.5]] }
+  const restored = Model.sanitizeNotebook({ schemaVersion: 2, sheets: [{ objects: [object] }] }, 760, 560)
+  assert.deepEqual(restored.documents[0].objects[0].points,
+    [[0, 0], [0, 0], [0, 0], [10, 20, 0.5]], "legacy coordinate coercion must not invent pressure or throw")
+})
+
+test("pressure samples obey the same stroke and notebook point budgets", () => {
+  const points = Array.from({ length: Model.MAX_STROKE_POINTS + 5 }, (_, i) => [i % 700, 30, (i % 100) / 100])
+  const document = Model.addStroke(Model.createDocument(760, 560), points, 12)
+  assert.equal(document.objects[0].points.length, Model.MAX_STROKE_POINTS)
+  assert.equal(Model.totalPoints([document]), Model.MAX_STROKE_POINTS)
+  assert.equal(Model.overLimits([document]), 0)
+  const restored = Model.sanitizeNotebook(JSON.parse(Model.serialize([document], 0, {})), 760, 560)
+  assert.deepEqual(restored.documents[0].objects, document.objects)
+})
+
 test("deletes one object immutably and clears the document", () => {
   const withStroke = Model.addStroke(Model.createDocument(760, 560), [[1, 1], [2, 2]], 2)
   const deleted = Model.deleteObject(withStroke, "stroke-1")
@@ -158,6 +222,23 @@ test("round-trips a notebook through serialize and sanitize", () => {
   assert.deepEqual(restored.documents.map(document => document.paper), ["graph", "ruled"])
   assert.equal(restored.current, 1)
   assert.deepEqual(restored.ui, ui)
+})
+
+test("sheet sizing includes the pressure boost and agrees with the rendering envelope", () => {
+  const Geometry = require("../Geometry.js")
+  for (const width of [1, 4, 10, 12]) {
+    for (const pressure of [false, true]) {
+      for (let step = 0; step <= 100; step++) {
+        const point = [510 + step / 10, 100]
+        if (pressure) point.push(1)
+        const document = Model.addStroke(Model.createDocument(760, 560), [point], width)
+        const stroke = document.objects[0]
+        const right = stroke.points[0][0] + Geometry.strokeMaxWidth(stroke) / 2
+        assert.equal(Model.fitsSize(document, "small"), right <= Model.SIZES.small.width,
+          `width=${width}, pressure=${pressure}, x=${stroke.points[0][0]}: no visible ink may be clipped by resizing`)
+      }
+    }
+  }
 })
 
 test("each sheet has a paper type that cycles and survives edits", () => {
@@ -312,7 +393,14 @@ test("any notebook within the limits reloads exactly as it was saved", () => {
   const Geometry = require("../Geometry.js")
   let seed = 7
   const rand = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
-  const strokeAt = (x, y, n) => Array.from({ length: n }, (_, i) => [x + Math.cos(i / 3) * i * 0.8, y + Math.sin(i / 3) * i * 0.8])
+  const strokeAt = (x, y, n) => {
+    const pressure = rand() < 0.5
+    return Array.from({ length: n }, (_, i) => {
+      const point = [x + Math.cos(i / 3) * i * 0.8, y + Math.sin(i / 3) * i * 0.8]
+      if (pressure) point.push((Math.sin(i / 7) + 1) / 2)
+      return point
+    })
+  }
   let checked = 0, sawOver = false
   for (let round = 0; round < 40; round++) {
     let docs = [Model.createDocument(760, 560), Model.setPaper(Model.createSheet("small"), "dots")]

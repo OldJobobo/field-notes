@@ -63,6 +63,100 @@ test("simplifies nearly straight runs but keeps corners", () => {
   assert.deepEqual(Geometry.simplifyStroke([[1, 1]], 0.35), [[1, 1]])
 })
 
+test("pressure width is gentle, monotonic, bounded, and distinguishes zero from missing", () => {
+  assert.equal(Geometry.hasPressure([[1, 2], [3, 4, null]]), false)
+  assert.equal(Geometry.hasPressure([[1, 2, 0]]), true)
+  assert.equal(Geometry.pointPressure([1, 2]), 1)
+  assert.equal(Geometry.pointPressure([1, 2, 0]), 0)
+  assert.equal(Geometry.pointPressure([1, 2, NaN]), 1)
+  assert.equal(Geometry.pressureWidth(4, 0), 1.2)
+  assert.equal(Geometry.pressureWidth(4, 1), 4.4)
+  assert.equal(Geometry.pressureWidth(4, undefined), 4)
+  assert.equal(Geometry.pressureWidth(4, NaN), 4)
+  assert.equal(Geometry.pressureWidth(4, -5), 1.2)
+  assert.equal(Geometry.pressureWidth(4, 5), 4.4)
+  let previous = 0
+  for (let i = 0; i <= 100; i++) {
+    const width = Geometry.pressureWidth(4, i / 100)
+    assert.ok(width >= 1.2 && width <= 4.4 && width > previous)
+    previous = width
+  }
+  assert.ok(Geometry.pressureWidth(4, 0.5) < 2.5, "mid pressure should not already look firm")
+})
+
+test("pressure range widens slightly while preserving the middle and fixed-width input", () => {
+  const previous = pressure => 4 * (0.35 + 0.65 * Math.pow(pressure, 1.8))
+  for (const pressure of [0.1, 0.25])
+    assert.ok(Geometry.pressureWidth(4, pressure) < previous(pressure), "lighter contact should be finer")
+  for (const pressure of [0.75, 1])
+    assert.ok(Geometry.pressureWidth(4, pressure) > previous(pressure), "firm contact should be broader")
+  assert.ok(Math.abs(Geometry.pressureWidth(4, 0.5) / previous(0.5) - 1) < 0.02,
+    "keep the familiar mid-pressure feel within two percent")
+  assert.equal(Geometry.pressureWidth(4, 0), 1.2)
+  assert.equal(Geometry.pressureWidth(4, 1), 4.4)
+  assert.equal(Geometry.pressureWidth(4, undefined), 4, "fixed-width input is unchanged")
+})
+
+test("selection envelopes include the boosted pressure width but not legacy strokes", () => {
+  const pressure = { id: "stroke-1", type: "stroke", width: 10, points: [[20, 20, 1], [120, 20, 1]] }
+  const legacy = { ...pressure, points: [[20, 20], [120, 20]] }
+  assert.equal(Geometry.strokeMaxWidth(pressure), 11)
+  assert.equal(Geometry.strokeMaxWidth(legacy), 10)
+  assert.equal(Geometry.strokeMaxWidth({ ...pressure, points: [[20, 20, 0]] }), 11,
+    "even zero-pressure samples use the conservative pressure envelope")
+  assert.equal(Geometry.hitTest([pressure], [60, 25.4], 0), "stroke-1", "the visible outer edge remains selectable")
+  assert.equal(Geometry.hitTest([legacy], [60, 25.4], 0), "")
+})
+
+test("eraser cuts interpolate pressure and preserve pressure dots", () => {
+  const points = [[0, 0, 0], [100, 0, 1]]
+  assert.deepEqual(Geometry.splitStroke(points, [50, 0], 10), [
+    [[0, 0, 0], [40, 0, 0.4]], [[60, 0, 0.6], [100, 0, 1]]
+  ])
+  assert.deepEqual(Geometry.splitStroke([[1, 1, 0.2]], [30, 30], 2), [[[1, 1, 0.2]]])
+  assert.deepEqual(Geometry.splitStroke([[1, 1, 0.2]], [1, 1], 2), [])
+  assert.deepEqual(points, [[0, 0, 0], [100, 0, 1]])
+  const mixed = Geometry.lerp([0, 0, 0], [100, 0], 0.5)
+  assert.deepEqual(mixed, [50, 0, 0.5], "missing pressure interpolates from full width")
+  assert.deepEqual(Geometry.lerp([0, 0], [100, 0], 0.5), [50, 0])
+})
+
+test("simplification preserves straight-line pressure extrema and stationary changes", () => {
+  const ramp = [[0, 0, 0.1], [10, 0, 0.5], [20, 0, 0.9], [30, 0, 0.5], [40, 0, 0.1]]
+  assert.deepEqual(Geometry.simplifyStroke(ramp, 0.35), [ramp[0], ramp[2], ramp[4]])
+  const stationary = [[10, 10, 0.1], [10, 10, 0.9], [10, 10, 0.1]]
+  assert.deepEqual(Geometry.simplifyStroke(stationary, 0.35), stationary)
+  const constant = [[0, 0, 0.5], [10, 0.05, 0.5], [20, 0, 0.5]]
+  assert.deepEqual(Geometry.simplifyStroke(constant, 0.35), [constant[0], constant[2]])
+  assert.deepEqual(Geometry.simplifyStroke([[0, 0], [10, 0, 0], [20, 0]], 0.35),
+    [[0, 0], [10, 0, 0], [20, 0]], "missing values must not be confused with light contact")
+})
+
+test("simplification falls back without data loss on adversarial pressure samples", () => {
+  const points = Array.from({ length: 8192 }, (_, i) => [i / 20, 200, i % 2])
+  const simplified = Geometry.simplifyStroke(points, 0.35)
+  assert.notEqual(simplified, points)
+  assert.deepEqual(simplified, points, "a linear work budget must not flatten pressure detail")
+})
+
+test("pressure paths keep endpoints, follow midpoint curves, and bound subdivision", () => {
+  assert.deepEqual(Geometry.pressurePath([]), [])
+  assert.deepEqual(Geometry.pressurePath([[1, 2, 0]]), [[1, 2, 0]])
+  const held = [[10, 10, 0.1], [10, 10, 0.9], [10, 10, 0.2]]
+  assert.deepEqual(Geometry.pressurePath(held), held, "easing off must not shrink a held dot")
+  const points = [[0, 0, 0.1], [500, 700, 1], [1000, 0, 0.2]]
+  const path = Geometry.pressurePath(points)
+  assert.deepEqual(path[0], points[0])
+  assert.deepEqual(path.at(-1), points.at(-1))
+  assert.ok(path.length > 3 && path.length <= 66)
+  assert.deepEqual(path.at(-2), Geometry.lerp(points[1], points[2], 0.5))
+  for (const point of path) {
+    assert.ok(point.every(Number.isFinite))
+    assert.ok(point[2] >= 0.1 && point[2] <= 1)
+  }
+  assert.deepEqual(points, [[0, 0, 0.1], [500, 700, 1], [1000, 0, 0.2]])
+})
+
 test("steadies jagged mouse strokes without moving ends or rounding corners", () => {
   // A circle as a mouse reports it: whole pixels plus a slow wobble.
   const circle = []

@@ -102,7 +102,12 @@ function contentExtent(document) {
             extent.width = Math.max(extent.width, object.x + object.width)
             extent.height = Math.max(extent.height, object.y + object.height)
         } else if (object.type === "stroke") {
-            var half = Number(object.width || 1) / 2
+            var pressure = object.points.some(function(point) {
+                return point && typeof point[2] === "number" && isFinite(point[2])
+            })
+            // Keep the firm-press envelope in sync with Geometry.pressureWidth;
+            // sizing tests compare both without coupling these standalone modules.
+            var half = Number(object.width || 1) * (pressure ? 1.1 : 1) / 2
             for (var j = 0; j < object.points.length; j++) {
                 extent.width = Math.max(extent.width, object.points[j][0] + half)
                 extent.height = Math.max(extent.height, object.points[j][1] + half)
@@ -188,8 +193,14 @@ function cleanPoints(document, points) {
     for (var i = 0; i < points.length && clean.length < MAX_STROKE_POINTS; i++) {
         var x = Number(points[i] && points[i][0])
         var y = Number(points[i] && points[i][1])
-        if (isFinite(x) && isFinite(y))
-            clean.push([round1(clamp(x, 0, document.page.width)), round1(clamp(y, 0, document.page.height))])
+        if (isFinite(x) && isFinite(y)) {
+            var point = [round1(clamp(x, 0, document.page.width)), round1(clamp(y, 0, document.page.height))]
+            // Optional pressure; absent or malformed values retain legacy fixed-width ink.
+            var pressure = Array.isArray(points[i]) ? points[i][2] : undefined
+            if (typeof pressure === "number" && isFinite(pressure))
+                point.push(Math.round(clamp(pressure, 0, 1) * 1000) / 1000)
+            clean.push(point)
+        }
     }
     return clean
 }
@@ -313,7 +324,10 @@ function translateObject(document, id, dx, dy) {
     if (offsetX === 0 && offsetY === 0)
         return document
     var points = source.points.map(function(point) {
-        return [round1(point[0] + offsetX), round1(point[1] + offsetY)]
+        var moved = point.slice(0, 3)
+        moved[0] = round1(point[0] + offsetX)
+        moved[1] = round1(point[1] + offsetY)
+        return moved
     })
     return replaceAt(document, index, Object.assign({}, source, { points: points }))
 }
@@ -531,6 +545,7 @@ if (typeof module !== "undefined")
     module.exports = {
         MAX_SHEETS: MAX_SHEETS,
         MAX_TOTAL_POINTS: MAX_TOTAL_POINTS,
+        MAX_STROKE_POINTS: MAX_STROKE_POINTS,
         totalPoints: totalPoints,
         overLimits: overLimits,
         MAX_OBJECTS: MAX_OBJECTS,
